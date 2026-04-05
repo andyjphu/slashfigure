@@ -26,7 +26,8 @@ Features and decisions explicitly deferred to post-MVP. Review after MVP launch.
 
 ### Drawing Primitives (post-MVP)
 - Ellipse, circle, triangle, polygon, star
-- Curved paths (Bezier)
+- Curved paths (Bezier) -- includes arrow midpoint insertion (hover mid-section to add vertex, drag to curve)
 - Groups / frames
 - Chart elements (embedded Plotly/Vega-Lite)
 - Matplotlib SVG import with GID convention
+- **Icon library (solid-icons)** -- expose solid-icons (15,000+ icons from 20+ packs) as draggable elements users can place on canvas. solid-icons is for user content; Lucide is for UI chrome.
