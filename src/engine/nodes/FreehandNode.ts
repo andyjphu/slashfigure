@@ -20,9 +20,15 @@ export class FreehandNode extends BaseNode {
   /** Raw input points in local space (relative to node origin) */
   inputPoints: InputPoint[] = [];
 
+  /** Original extent of points at finalize time (used for scaling) */
+  baseWidth: number = 0;
+  baseHeight: number = 0;
+
   /** Cached SVG path data for the stroke outline */
   cachedOutlinePath: Path2D | null = null;
   private cachedPointCount: number = 0;
+  private cachedScaleX: number = 1;
+  private cachedScaleY: number = 1;
 
   addPoint(localX: number, localY: number, pressure: number): void {
     this.inputPoints.push({ x: localX, y: localY, pressure });
@@ -30,13 +36,25 @@ export class FreehandNode extends BaseNode {
     this.markVisualDirty();
   }
 
+  private getScaleX(): number {
+    return this.baseWidth > 0 ? this.width / this.baseWidth : 1;
+  }
+
+  private getScaleY(): number {
+    return this.baseHeight > 0 ? this.height / this.baseHeight : 1;
+  }
+
   private getOutlinePath(): Path2D {
-    if (this.cachedOutlinePath && this.cachedPointCount === this.inputPoints.length) {
+    const sx = this.getScaleX();
+    const sy = this.getScaleY();
+    if (this.cachedOutlinePath && this.cachedPointCount === this.inputPoints.length
+        && this.cachedScaleX === sx && this.cachedScaleY === sy) {
       return this.cachedOutlinePath;
     }
 
+    // Scale points before generating the stroke outline
     const outlinePoints = getStroke(
-      this.inputPoints.map((p) => [p.x, p.y, p.pressure]),
+      this.inputPoints.map((p) => [p.x * sx, p.y * sy, p.pressure]),
       {
         size: this.style.strokeWidth * 3,
         thinning: 0.5,
@@ -56,6 +74,8 @@ export class FreehandNode extends BaseNode {
 
     this.cachedOutlinePath = path;
     this.cachedPointCount = this.inputPoints.length;
+    this.cachedScaleX = sx;
+    this.cachedScaleY = sy;
     return path;
   }
 
@@ -83,11 +103,13 @@ export class FreehandNode extends BaseNode {
     const inverseWorld = invertMatrix(this.getWorldTransform());
     const local = transformPoint(inverseWorld, { x: worldX, y: worldY });
 
-    // Check distance to any segment of the input polyline
+    // Scale points to match current dimensions for hit testing
+    const sx = this.getScaleX();
+    const sy = this.getScaleY();
     const threshold = Math.max(8, this.style.strokeWidth * 2);
     for (let i = 1; i < this.inputPoints.length; i++) {
-      const prev = this.inputPoints[i - 1];
-      const curr = this.inputPoints[i];
+      const prev = { x: this.inputPoints[i - 1].x * sx, y: this.inputPoints[i - 1].y * sy };
+      const curr = { x: this.inputPoints[i].x * sx, y: this.inputPoints[i].y * sy };
       const dist = pointToSegmentDist(local, prev, curr);
       if (dist < threshold) return true;
     }
@@ -140,6 +162,8 @@ export class FreehandNode extends BaseNode {
     }
     this.width = maxX - minX;
     this.height = maxY - minY;
+    this.baseWidth = this.width;
+    this.baseHeight = this.height;
     this.cachedOutlinePath = null;
     this.markTransformDirty();
   }

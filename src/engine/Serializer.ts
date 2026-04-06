@@ -34,6 +34,8 @@ interface SerializedNode {
   endCap?: CapStyle;
   sourceUrl?: string;
   inputPoints?: Array<{ x: number; y: number; pressure: number }>;
+  baseWidth?: number;
+  baseHeight?: number;
 }
 
 interface SerializedProject {
@@ -92,6 +94,8 @@ function serializeNode(node: BaseNode): SerializedNode {
 
   if (node instanceof FreehandNode) {
     base.inputPoints = node.inputPoints.map((p) => ({ x: p.x, y: p.y, pressure: p.pressure }));
+    base.baseWidth = node.baseWidth;
+    base.baseHeight = node.baseHeight;
   }
 
   return base;
@@ -138,6 +142,8 @@ function deserializeNode(data: SerializedNode): BaseNode {
       const freehandNode = new FreehandNode(data.id);
       freehandNode.inputPoints = data.inputPoints ?? [];
       freehandNode.finalize();
+      if (data.baseWidth) freehandNode.baseWidth = data.baseWidth;
+      if (data.baseHeight) freehandNode.baseHeight = data.baseHeight;
       node = freehandNode;
       break;
     }
