@@ -60,6 +60,12 @@ registerNodeType("image", {
   usesBoundingBoxSelection: true,
 });
 
+registerNodeType("equation", {
+  layerLabel: "Equation",
+  iconName: "sigma",
+  usesBoundingBoxSelection: true,
+});
+
 registerNodeType("group", {
   layerLabel: "Group",
   iconName: "folder",

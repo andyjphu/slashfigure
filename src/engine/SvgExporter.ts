@@ -5,6 +5,7 @@ import { TextNode } from "./nodes/TextNode";
 import { PathNode } from "./nodes/PathNode";
 import { ImageNode } from "./nodes/ImageNode";
 import { FreehandNode } from "./nodes/FreehandNode";
+import { containsMath, parseTextWithMath } from "./MathJaxService";
 import getStroke from "perfect-freehand";
 
 /** Export scene graph as a self-contained SVG string */
@@ -41,6 +42,9 @@ function elementToSvg(el: BaseNode): string {
   }
 
   if (el instanceof TextNode) {
+    if (containsMath(el.content)) {
+      return renderTextWithMathToSvg(el, transform);
+    }
     const escaped = el.content.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
     return `<text x="0" y="${el.fontSize}" font-size="${el.fontSize}" font-family="${el.fontFamily}" font-weight="${el.fontWeight}" fill="${el.style.fillColor}" opacity="${el.style.opacity}" transform="${transform}">${escaped}</text>`;
   }
@@ -98,4 +102,42 @@ function elementToSvg(el: BaseNode): string {
   }
 
   return "";
+}
+
+/** Render a TextNode with inline math. Plain text as <text>, math as inline MathJax SVG. */
+function renderTextWithMathToSvg(el: TextNode, transform: string): string {
+  const segments = parseTextWithMath(el.content);
+  const parts: string[] = [];
+  let x = 0;
+
+  parts.push(`<g transform="${transform}">`);
+
+  for (const seg of segments) {
+    if (seg.type === "text") {
+      const escaped = seg.content.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+      parts.push(`<text x="${x}" y="${el.fontSize}" font-size="${el.fontSize}" font-family="${el.fontFamily}" font-weight="${el.fontWeight}" fill="${el.style.fillColor}" opacity="${el.style.opacity}">${escaped}</text>`);
+      // Approximate text width (we don't have a canvas context here)
+      x += seg.content.length * el.fontSize * 0.6;
+    } else {
+      // Inline the MathJax SVG directly
+      const cached = el.mathCache.get(seg.content);
+      if (cached?.svgContent) {
+        // Wrap the MathJax SVG in a positioned group
+        const lineHeight = el.fontSize * 1.4;
+        const yOffset = (lineHeight - cached.height) / 2;
+        parts.push(`<g transform="translate(${x}, ${yOffset})">`);
+        parts.push(cached.svgContent);
+        parts.push(`</g>`);
+        x += cached.width;
+      } else {
+        // Fallback: raw LaTeX source
+        const escaped = `$${seg.content}$`.replace(/&/g, "&amp;").replace(/</g, "&lt;");
+        parts.push(`<text x="${x}" y="${el.fontSize}" font-size="${el.fontSize}" font-family="monospace" fill="#888">${escaped}</text>`);
+        x += seg.content.length * el.fontSize * 0.6;
+      }
+    }
+  }
+
+  parts.push(`</g>`);
+  return parts.join("\n");
 }

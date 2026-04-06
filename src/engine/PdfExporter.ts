@@ -2,6 +2,8 @@ import PDFDocument from "pdfkit/js/pdfkit.standalone";
 import type { BaseNode } from "./nodes/BaseNode";
 import { RectangleNode } from "./nodes/RectangleNode";
 import { TextNode } from "./nodes/TextNode";
+import { containsMath, parseTextWithMath } from "./MathJaxService";
+import { renderMathSvgToPdf } from "./MathSvgToPdf";
 import { PathNode } from "./nodes/PathNode";
 import { ImageNode } from "./nodes/ImageNode";
 import { FreehandNode } from "./nodes/FreehandNode";
@@ -107,11 +109,45 @@ function renderRectToPdf(doc: PDFKit.PDFDocument, el: RectangleNode): void {
 
 function renderTextToPdf(doc: PDFKit.PDFDocument, el: TextNode): void {
   doc.opacity(el.style.opacity);
-  doc.fillColor(el.style.fillColor);
   doc.fontSize(el.fontSize);
-  doc.text(el.content, 0, 0, {
-    width: el.width > 0 ? el.width : undefined,
-  });
+
+  if (!containsMath(el.content)) {
+    doc.fillColor(el.style.fillColor);
+    doc.text(el.content, 0, 0, { width: el.width > 0 ? el.width : undefined });
+    return;
+  }
+
+  // Render text with inline math as vector paths
+  const segments = parseTextWithMath(el.content);
+  let x = 0;
+
+  for (const seg of segments) {
+    if (seg.type === "text") {
+      doc.fillColor(el.style.fillColor);
+      doc.text(seg.content, x, 0, { lineBreak: false });
+      x += doc.widthOfString(seg.content);
+    } else {
+      // Render math segment as vector paths from cached MathJax SVG
+      const cached = el.mathCache.get(seg.content);
+      if (cached?.svgContent) {
+        renderMathSvgToPdf(
+          doc,
+          cached.svgContent,
+          x,
+          0,
+          cached.width,
+          el.style.fillColor,
+        );
+        x += cached.width;
+      } else {
+        // Fallback: raw LaTeX source
+        doc.fillColor("#888888");
+        const fallback = `$${seg.content}$`;
+        doc.text(fallback, x, 0, { lineBreak: false });
+        x += doc.widthOfString(fallback);
+      }
+    }
+  }
 }
 
 function renderPathToPdf(doc: PDFKit.PDFDocument, el: PathNode): void {
@@ -152,6 +188,7 @@ function renderPathToPdf(doc: PDFKit.PDFDocument, el: PathNode): void {
     doc.moveTo(last.x, last.y).lineTo(ax2, ay2).stroke();
   }
 }
+
 
 function renderFreehandToPdf(doc: PDFKit.PDFDocument, el: FreehandNode): void {
   if (el.inputPoints.length < 2) return;

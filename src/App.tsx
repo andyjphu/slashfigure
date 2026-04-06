@@ -71,6 +71,7 @@ export default function App() {
           isGridSnappingEnabled={() => engine?.isGridSnappingEnabled() ?? false}
           onToggleStickyTools={() => { engine?.toggleStickyTools(); }}
           isStickyToolsEnabled={() => engine?.isStickyToolsEnabled() ?? false}
+          onEditLatexMacros={() => engine?.editLatexMacros()}
         />
 
         {/* Center: page tabs + canvas */}

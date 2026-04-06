@@ -127,6 +127,7 @@ function deserializeNode(data: SerializedNode): BaseNode {
       textNode.fontFamily = data.fontFamily ?? "system-ui, sans-serif";
       textNode.fontWeight = data.fontWeight ?? "normal";
       textNode.textAlign = (data.textAlign as CanvasTextAlign) ?? "left";
+      textNode.renderMath(); // async, renders math regions when MathJax loads
       node = textNode;
       break;
     }

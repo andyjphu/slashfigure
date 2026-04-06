@@ -31,8 +31,9 @@ export interface EngineContext {
   // Tool management
   revertToSelectIfNotSticky(): void;
 
-  // Text editing
+  // Editing overlays
   startTextEditing(nodeId: string): void;
+  startEquationEditing(nodeId: string): void;
 
   // Settings
   readonly gridSnapping: boolean;

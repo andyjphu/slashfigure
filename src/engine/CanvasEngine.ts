@@ -16,6 +16,7 @@ import { createToolRegistry } from "./tools/ToolRegistry";
 import type { Tool } from "./tools/Tool";
 import type { EngineContext } from "./tools/EngineContext";
 import { TEXT_EDIT_BORDER } from "./theme";
+import { getUserMacros, setUserMacros } from "./MathJaxService";
 
 
 /**
@@ -57,6 +58,7 @@ export class CanvasEngine implements EngineContext {
   // Text editing
   private editingTextNodeId: string | null = null;
   private textOverlay: HTMLDivElement | null = null;
+  private editingNode: TextNode | null = null;
 
   constructor(canvas: HTMLCanvasElement, store?: EngineStore) {
     this.canvas = canvas;
@@ -105,6 +107,14 @@ export class CanvasEngine implements EngineContext {
   clearSelection(): void {
     this.selectedIds.clear();
     this.selectedVertexMap.clear();
+  }
+
+  /** Add element and wire up callbacks */
+  addElementToScene(node: BaseNode): void {
+    this.sceneGraph.addElement(node);
+    if (node instanceof TextNode) {
+      node.onMathRendered = () => this.requestRender();
+    }
   }
 
   addToSelection(id: string): void {
@@ -256,24 +266,23 @@ export class CanvasEngine implements EngineContext {
     overlay.style.whiteSpace = "pre-wrap";
     overlay.style.zIndex = "1000";
 
-    // Position the overlay directly in the canvas parent's coordinate space
-    // The parent div is position:relative and the canvas fills it with inset-0
-    const wt = node.getWorldTransform();
-    const screenPos = this.viewport.worldToScreen(wt[4], wt[5]);
-    overlay.style.left = `${screenPos.x}px`;
-    overlay.style.top = `${screenPos.y}px`;
-    overlay.style.fontSize = `${node.fontSize * this.viewport.state.zoom}px`;
+    this.editingNode = node;
+    this.canvas.parentElement!.appendChild(overlay);
+    this.textOverlay = overlay;
+    this.repositionTextOverlay();
 
     overlay.addEventListener("blur", () => {
       node.content = overlay.innerText || "Text";
       node.markVisualDirty();
+      // Trigger math rendering if content contains $...$
+      node.renderMath().then(() => this.requestRender());
       this.removeTextOverlay();
       this.editingTextNodeId = null;
       if (node.content !== previousContent) {
         const finalContent = node.content;
         this.undoManager.pushExecuted({
-          execute: () => { node.content = finalContent; node.markVisualDirty(); },
-          undo: () => { node.content = previousContent; node.markVisualDirty(); },
+          execute: () => { node.content = finalContent; node.markVisualDirty(); node.renderMath(); },
+          undo: () => { node.content = previousContent; node.markVisualDirty(); node.renderMath(); },
         });
       }
       this.requestRender();
@@ -283,9 +292,6 @@ export class CanvasEngine implements EngineContext {
       if (e.key === "Escape") overlay.blur();
       e.stopPropagation();
     });
-
-    this.canvas.parentElement!.appendChild(overlay);
-    this.textOverlay = overlay;
 
     requestAnimationFrame(() => {
       overlay.focus();
@@ -299,11 +305,27 @@ export class CanvasEngine implements EngineContext {
     });
   }
 
+  /** Reposition the text editing overlay to match the current viewport */
+  private repositionTextOverlay(): void {
+    if (!this.textOverlay || !this.editingNode) return;
+    const wt = this.editingNode.getWorldTransform();
+    const screenPos = this.viewport.worldToScreen(wt[4], wt[5]);
+    this.textOverlay.style.left = `${screenPos.x}px`;
+    this.textOverlay.style.top = `${screenPos.y}px`;
+    this.textOverlay.style.fontSize = `${this.editingNode.fontSize * this.viewport.state.zoom}px`;
+  }
+
   private removeTextOverlay(): void {
     if (this.textOverlay?.parentElement) {
       this.textOverlay.parentElement.removeChild(this.textOverlay);
     }
     this.textOverlay = null;
+    this.editingNode = null;
+  }
+
+  startEquationEditing(nodeId: string): void {
+    // Equations are just TextNodes with $$ delimiters -- use the same text editor
+    this.startTextEditing(nodeId);
   }
 
   // -- Public API (called by UI) --
@@ -435,6 +457,95 @@ export class CanvasEngine implements EngineContext {
       node.name = name;
       this.syncStore();
     }
+  }
+
+  editLatexMacros(): void {
+    const current = getUserMacros();
+    const overlay = document.createElement("div");
+    overlay.style.position = "fixed";
+    overlay.style.top = "0";
+    overlay.style.left = "0";
+    overlay.style.width = "100%";
+    overlay.style.height = "100%";
+    overlay.style.background = "rgba(0,0,0,0.3)";
+    overlay.style.display = "flex";
+    overlay.style.alignItems = "center";
+    overlay.style.justifyContent = "center";
+    overlay.style.zIndex = "2000";
+
+    const dialog = document.createElement("div");
+    dialog.style.background = "white";
+    dialog.style.borderRadius = "8px";
+    dialog.style.padding = "16px";
+    dialog.style.width = "400px";
+    dialog.style.boxShadow = "0 4px 24px rgba(0,0,0,0.2)";
+
+    const title = document.createElement("div");
+    title.textContent = "Custom LaTeX Macros";
+    title.style.fontWeight = "600";
+    title.style.fontSize = "14px";
+    title.style.marginBottom = "4px";
+
+    const hint = document.createElement("div");
+    hint.textContent = "Define \\newcommand macros that will be prepended to every equation render.";
+    hint.style.fontSize = "11px";
+    hint.style.color = "#888";
+    hint.style.marginBottom = "8px";
+
+    const textarea = document.createElement("textarea");
+    textarea.value = current;
+    textarea.placeholder = "\\newcommand{\\loss}{\\mathcal{L}}\n\\newcommand{\\myvec}[1]{\\boldsymbol{#1}}";
+    textarea.style.width = "100%";
+    textarea.style.height = "120px";
+    textarea.style.fontFamily = "monospace";
+    textarea.style.fontSize = "12px";
+    textarea.style.border = "1px solid #ddd";
+    textarea.style.borderRadius = "4px";
+    textarea.style.padding = "8px";
+    textarea.style.resize = "vertical";
+    textarea.style.outline = "none";
+    textarea.style.boxSizing = "border-box";
+
+    const buttons = document.createElement("div");
+    buttons.style.display = "flex";
+    buttons.style.justifyContent = "flex-end";
+    buttons.style.gap = "8px";
+    buttons.style.marginTop = "12px";
+
+    const cancelBtn = document.createElement("button");
+    cancelBtn.textContent = "Cancel";
+    cancelBtn.style.padding = "4px 12px";
+    cancelBtn.style.fontSize = "12px";
+    cancelBtn.style.border = "1px solid #ddd";
+    cancelBtn.style.borderRadius = "4px";
+    cancelBtn.style.background = "white";
+    cancelBtn.style.cursor = "pointer";
+    cancelBtn.onclick = () => document.body.removeChild(overlay);
+
+    const saveBtn = document.createElement("button");
+    saveBtn.textContent = "Save";
+    saveBtn.style.padding = "4px 12px";
+    saveBtn.style.fontSize = "12px";
+    saveBtn.style.border = "none";
+    saveBtn.style.borderRadius = "4px";
+    saveBtn.style.background = "#333";
+    saveBtn.style.color = "white";
+    saveBtn.style.cursor = "pointer";
+    saveBtn.onclick = () => {
+      setUserMacros(textarea.value);
+      document.body.removeChild(overlay);
+    };
+
+    buttons.appendChild(cancelBtn);
+    buttons.appendChild(saveBtn);
+    dialog.appendChild(title);
+    dialog.appendChild(hint);
+    dialog.appendChild(textarea);
+    dialog.appendChild(buttons);
+    overlay.appendChild(dialog);
+    overlay.onclick = (e) => { if (e.target === overlay) document.body.removeChild(overlay); };
+    document.body.appendChild(overlay);
+    textarea.focus();
   }
 
   toggleVisibility(id: string): void {
@@ -712,7 +823,13 @@ export class CanvasEngine implements EngineContext {
         if (nodes.length > 0) {
           const page = this.sceneGraph.getActivePage();
           for (const child of [...page.children]) page.removeChild(child);
-          for (const node of nodes) this.sceneGraph.addElement(node);
+          for (const node of nodes) {
+            this.sceneGraph.addElement(node);
+            // Wire math render callback so canvas repaints when math loads
+            if (node instanceof TextNode) {
+              node.onMathRendered = () => this.requestRender();
+            }
+          }
           this.syncStore();
         }
       } catch { /* ignore corrupt autosave */ }
@@ -766,6 +883,7 @@ export class CanvasEngine implements EngineContext {
       this.viewport.state.offsetX += screenX - this.panStartScreen.x;
       this.viewport.state.offsetY += screenY - this.panStartScreen.y;
       this.panStartScreen = { x: screenX, y: screenY };
+      this.repositionTextOverlay();
       this.requestRender();
       return;
     }
@@ -796,6 +914,7 @@ export class CanvasEngine implements EngineContext {
     } else {
       this.viewport.pan(-event.deltaX, -event.deltaY);
     }
+    this.repositionTextOverlay();
     this.syncStore();
     this.requestRender();
   }
@@ -859,7 +978,7 @@ export class CanvasEngine implements EngineContext {
 
     // Tool shortcuts
     const toolShortcuts: Record<string, string> = {
-      KeyV: "select", KeyR: "rectangle", KeyT: "text", KeyA: "arrow", KeyP: "freehand",
+      KeyV: "select", KeyR: "rectangle", KeyT: "text", KeyA: "arrow", KeyP: "freehand", KeyE: "equation",
     };
     if (!event.repeat && !event.ctrlKey && !event.metaKey && toolShortcuts[event.code]) {
       this.setTool(toolShortcuts[event.code] as ToolMode);

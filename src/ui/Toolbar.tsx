@@ -2,7 +2,7 @@ import { For, createSignal } from "solid-js";
 import type { Accessor, JSX } from "solid-js";
 import type { ToolMode, LayerInfo } from "../engine/EngineStore";
 import {
-  MousePointer2, Square, Type, MoveRight, Pencil,
+  MousePointer2, Square, Type, MoveRight, Pencil, Sigma,
   Eye, EyeOff, Image,
 } from "lucide-solid";
 import { UI_TOOL_ACTIVE, UI_TOOL_INACTIVE } from "../engine/theme";
@@ -29,6 +29,7 @@ interface LeftSidebarProps {
   isGridSnappingEnabled: () => boolean;
   onToggleStickyTools: () => void;
   isStickyToolsEnabled: () => boolean;
+  onEditLatexMacros: () => void;
 }
 
 const TOOLS: Array<{ id: ToolMode; label: string; shortcut: string; icon: () => JSX.Element }> = [
@@ -37,6 +38,7 @@ const TOOLS: Array<{ id: ToolMode; label: string; shortcut: string; icon: () => 
   { id: "text", label: "Text", shortcut: "T", icon: () => <Type size={14} /> },
   { id: "arrow", label: "Arrow", shortcut: "A", icon: () => <MoveRight size={14} /> },
   { id: "freehand", label: "Freehand", shortcut: "P", icon: () => <Pencil size={14} /> },
+  { id: "equation", label: "Equation", shortcut: "E", icon: () => <Sigma size={14} /> },
 ];
 
 /** Map from NodeRegistry iconName to Lucide component.
@@ -47,6 +49,7 @@ const ICON_MAP: Record<string, (size: number) => JSX.Element> = {
   "type": (s) => <Type size={s} />,
   "image": (s) => <Image size={s} />,
   "pencil": (s) => <Pencil size={s} />,
+  "sigma": (s) => <Sigma size={s} />,
   "folder": (s) => <Square size={s} />,
 };
 
@@ -164,6 +167,7 @@ export function Toolbar(props: LeftSidebarProps) {
         <MenuButton label="Settings" items={[
           { label: "Grid Snapping", shortcut: () => props.isGridSnappingEnabled() ? "\u2713" : undefined, action: props.onToggleGridSnapping },
           { label: "Sticky Tools", shortcut: () => props.isStickyToolsEnabled() ? "\u2713" : undefined, action: props.onToggleStickyTools },
+          { label: "Custom LaTeX Macros...", action: props.onEditLatexMacros },
         ]} />
       </div>
 
