@@ -15,13 +15,20 @@ interface LeftSidebarProps {
   selectedIds: Accessor<ReadonlySet<string>>;
   onLayerSelect: (id: string, mode: "replace" | "toggle" | "range") => void;
   onToggleVisibility: (id: string) => void;
+  onReorderLayer: (from: number, to: number) => void;
+  onRenameLayer: (id: string, name: string) => void;
   onSave: () => void;
+  onSaveAs: () => void;
   onLoad: () => void;
   onExportSvg: () => void;
   onExportPng: () => void;
   onExportPdf: () => void;
   onToggleAutoSave: () => void;
   isAutoSaveEnabled: () => boolean;
+  onToggleGridSnapping: () => void;
+  isGridSnappingEnabled: () => boolean;
+  onToggleStickyTools: () => void;
+  isStickyToolsEnabled: () => boolean;
 }
 
 const TOOLS: Array<{ id: ToolMode; label: string; shortcut: string; icon: () => JSX.Element }> = [
@@ -50,12 +57,102 @@ function layerTypeIcon(type: string): JSX.Element {
 }
 
 export function Toolbar(props: LeftSidebarProps) {
+  const [editingLayerId, setEditingLayerId] = createSignal<string | null>(null);
+  const [dragFromIndex, setDragFromIndex] = createSignal<number | null>(null);
+  const [dropTargetIndex, setDropTargetIndex] = createSignal<number | null>(null);
+  let layerListRef: HTMLDivElement | undefined;
+
+  function handleLayerDragStart(index: number, event: PointerEvent) {
+    // Only start drag after a small movement threshold
+    const startY = event.clientY;
+    const startIndex = index;
+    let dragging = false;
+
+    function onMove(moveEvent: PointerEvent) {
+      if (!dragging && Math.abs(moveEvent.clientY - startY) > 4) {
+        dragging = true;
+        setDragFromIndex(startIndex);
+      }
+      if (dragging && layerListRef) {
+        // Find which layer row the cursor is over
+        const rows = layerListRef.querySelectorAll("[data-layer-row]");
+        let targetIdx: number | null = null;
+        for (let i = 0; i < rows.length; i++) {
+          const rect = rows[i].getBoundingClientRect();
+          const midY = rect.top + rect.height / 2;
+          if (moveEvent.clientY < midY) {
+            targetIdx = i;
+            break;
+          }
+        }
+        if (targetIdx === null) targetIdx = rows.length;
+        setDropTargetIndex(targetIdx);
+      }
+    }
+
+    function onUp() {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      if (dragging && dropTargetIndex() !== null && dragFromIndex() !== null) {
+        let to = dropTargetIndex()!;
+        const from = dragFromIndex()!;
+        // Adjust target if moving down (the source removal shifts indices)
+        if (to > from) to--;
+        if (from !== to) props.onReorderLayer(from, to);
+      }
+      setDragFromIndex(null);
+      setDropTargetIndex(null);
+    }
+
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  }
+
+  let lastClickTime = 0;
+  let lastClickId = "";
+
+  function handleLayerClick(id: string, event: MouseEvent) {
+    if (editingLayerId() !== null) return;
+    const now = Date.now();
+    // Detect double-click manually: two clicks on same ID within 400ms
+    if (id === lastClickId && now - lastClickTime < 400) {
+      // This is the second click of a double-click -- trigger rename
+      handleLayerDoubleClick(id);
+      lastClickTime = 0;
+      lastClickId = "";
+      return;
+    }
+    lastClickTime = now;
+    lastClickId = id;
+    const mode = event.shiftKey ? "range" as const : (event.ctrlKey || event.metaKey) ? "toggle" as const : "replace" as const;
+    props.onLayerSelect(id, mode);
+  }
+
+  function handleLayerDoubleClick(id: string) {
+    setEditingLayerId(id);
+    // SolidJS re-renders the <For> when layers signal updates from selection.
+    // Use a longer delay and retry to find the input after the dust settles.
+    const tryFocus = (attempts: number) => {
+      const input = document.querySelector(`[data-layer-edit="${id}"]`) as HTMLInputElement | null;
+      if (input) { input.focus(); input.select(); }
+      else if (attempts > 0) setTimeout(() => tryFocus(attempts - 1), 20);
+    };
+    setTimeout(() => tryFocus(5), 10);
+  }
+
+  function commitLayerRename(id: string, value: string) {
+    const trimmed = value.trim();
+    if (trimmed) props.onRenameLayer(id, trimmed);
+    setEditingLayerId(null);
+  }
+
   return (
     <div class="flex w-48 shrink-0 flex-col border-r border-gray-200 bg-white">
       {/* File menu */}
       <div class="flex gap-3 border-b border-gray-200 px-3 py-1.5">
         <MenuButton label="File" items={[
           { label: "Save", shortcut: "Ctrl+S", action: props.onSave },
+          { label: "Save As...", shortcut: "Ctrl+Shift+S", action: props.onSaveAs },
           { label: "Open...", shortcut: "Ctrl+O", action: props.onLoad },
           { label: "Autosave", shortcut: () => props.isAutoSaveEnabled() ? "\u2713" : undefined, action: props.onToggleAutoSave },
         ]} />
@@ -63,6 +160,10 @@ export function Toolbar(props: LeftSidebarProps) {
           { label: "PDF", action: props.onExportPdf },
           { label: "SVG", action: props.onExportSvg },
           { label: "PNG", action: props.onExportPng },
+        ]} />
+        <MenuButton label="Settings" items={[
+          { label: "Grid Snapping", shortcut: () => props.isGridSnappingEnabled() ? "\u2713" : undefined, action: props.onToggleGridSnapping },
+          { label: "Sticky Tools", shortcut: () => props.isStickyToolsEnabled() ? "\u2713" : undefined, action: props.onToggleStickyTools },
         ]} />
       </div>
 
@@ -90,28 +191,54 @@ export function Toolbar(props: LeftSidebarProps) {
       </div>
 
       {/* Layers list */}
-      <div class="flex-1 overflow-y-auto">
+      <div class="flex-1 overflow-y-auto" ref={layerListRef}>
         <For each={props.layers()}>
-          {(layer) => {
+          {(layer, index) => {
             const isSelected = () => props.selectedIds().has(layer.id);
+            const isDragSource = () => dragFromIndex() === index();
+            const isDropBefore = () => dropTargetIndex() === index();
+            const isDropAfter = () => dropTargetIndex() === index() + 1 && index() === props.layers().length - 1;
             return (
-              <button
-                class={`group flex h-7 w-full items-center gap-1.5 px-3 text-left text-[11px] transition-colors ${
-                  isSelected()
-                    ? "bg-blue-50 text-gray-900"
-                    : "text-gray-600 hover:bg-gray-50"
-                } ${!layer.visible ? "opacity-40" : ""}`}
-                onClick={(e) => {
-                  const mode = e.shiftKey ? "range" : (e.ctrlKey || e.metaKey) ? "toggle" : "replace";
-                  props.onLayerSelect(layer.id, mode);
-                }}
+              <>
+                {/* Insertion indicator line (before this row) */}
+                {isDropBefore() && <div class="h-0.5 bg-blue-500 mx-2" />}
+                <button
+                  data-layer-row
+                  class={`group flex h-7 w-full items-center gap-1.5 px-3 text-left text-[11px] transition-colors ${
+                    isSelected()
+                      ? "bg-blue-50 text-gray-900"
+                      : "text-gray-600 hover:bg-gray-50"
+                  } ${!layer.visible ? "opacity-40" : ""} ${isDragSource() ? "opacity-30" : ""}`}
+                  onPointerDown={(e) => {
+                    if (e.button === 0 && editingLayerId() === null) {
+                      handleLayerDragStart(index(), e);
+                    }
+                  }}
+                  onClick={(e) => handleLayerClick(layer.id, e)}
               >
                 <span class="shrink-0 text-gray-400">
                   {layerTypeIcon(layer.type)}
                 </span>
-                <span class="min-w-0 flex-1 truncate">
-                  {layer.name}
-                </span>
+                {editingLayerId() === layer.id ? (
+                  <input
+                    data-layer-edit={layer.id}
+                    type="text"
+                    value={layer.name}
+                    class="h-5 min-w-0 flex-1 rounded border border-gray-300 bg-white px-1 text-[11px] outline-none focus:border-gray-400"
+                    onBlur={(e) => commitLayerRename(layer.id, e.currentTarget.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") commitLayerRename(layer.id, e.currentTarget.value);
+                      if (e.key === "Escape") setEditingLayerId(null);
+                      e.stopPropagation();
+                    }}
+                    onClick={(e) => e.stopPropagation()}
+                    onDblClick={(e) => e.stopPropagation()}
+                  />
+                ) : (
+                  <span class="min-w-0 flex-1 truncate">
+                    {layer.name}
+                  </span>
+                )}
                 <span
                   class={`shrink-0 text-gray-400 hover:text-gray-600 ${
                     layer.visible ? "opacity-0 group-hover:opacity-100" : "opacity-100"
@@ -124,6 +251,9 @@ export function Toolbar(props: LeftSidebarProps) {
                   {layer.visible ? <Eye size={12} /> : <EyeOff size={12} />}
                 </span>
               </button>
+                {/* Insertion indicator after last row */}
+                {isDropAfter() && <div class="h-0.5 bg-blue-500 mx-2" />}
+              </>
             );
           }}
         </For>

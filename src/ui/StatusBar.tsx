@@ -5,10 +5,10 @@ interface StatusBarProps {
   zoom: Accessor<number>;
   selectedCount: Accessor<number>;
   lastSaveTime: Accessor<number | null>;
+  fileName: Accessor<string>;
 }
 
 export function StatusBar(props: StatusBarProps) {
-  // Tick every 30s to update "X min ago" display
   const [now, setNow] = createSignal(Date.now());
   const interval = setInterval(() => setNow(Date.now()), 30_000);
   onCleanup(() => clearInterval(interval));
@@ -30,7 +30,10 @@ export function StatusBar(props: StatusBarProps) {
           ? `${props.selectedCount()} selected`
           : "No selection"}
       </span>
-      <span>{saveLabel()}</span>
+      <span>
+        {props.fileName()}
+        {saveLabel() ? ` | ${saveLabel()}` : ""}
+      </span>
       <span>{Math.round(props.zoom() * 100)}%</span>
     </div>
   );

@@ -6,6 +6,7 @@ import { Viewport } from "./Viewport";
 import { Renderer } from "./Renderer";
 import { UndoManager } from "./UndoManager";
 import { ImageNode } from "./nodes/ImageNode";
+import { PathNode } from "./nodes/PathNode";
 import { TextNode } from "./nodes/TextNode";
 import { RectangleNode } from "./nodes/RectangleNode";
 import type { BaseNode } from "./nodes/BaseNode";
@@ -15,6 +16,7 @@ import { createToolRegistry } from "./tools/ToolRegistry";
 import type { Tool } from "./tools/Tool";
 import type { EngineContext } from "./tools/EngineContext";
 import { TEXT_EDIT_BORDER } from "./theme";
+
 
 /**
  * The main canvas engine. Slim coordinator that delegates input to tools,
@@ -38,14 +40,17 @@ export class CanvasEngine implements EngineContext {
   // Selection state (part of EngineContext interface)
   readonly selectedIds: Set<string> = new Set();
   readonly selectedVertexMap: Map<string, Set<number>> = new Map();
+  gridSnapping: boolean = false;
+  stickyTools: boolean = false;
   lastStyleChangeTime: number = 0;
 
   // Marquee state
   private marqueeStart: Point | null = null;
   private marqueeEnd: Point | null = null;
 
-  // Pan state
+  // Keyboard state
   private spaceHeld: boolean = false;
+  private shiftHeld: boolean = false;
   private isPanning: boolean = false;
   private panStartScreen: Point = { x: 0, y: 0 };
 
@@ -77,6 +82,12 @@ export class CanvasEngine implements EngineContext {
       this.autoSave.saveNow(serializeSceneGraph(this.sceneGraph));
     });
 
+    // Restore settings from localStorage
+    this.gridSnapping = localStorage.getItem("sf:gridSnapping") === "true";
+    this.stickyTools = localStorage.getItem("sf:stickyTools") === "true";
+    const autosavePref = localStorage.getItem("sf:autosave");
+    if (autosavePref === "false") this.autoSave.setEnabled(false);
+
     this.autoSave.onSaved = () => {
       this.store?.setLastSaveTime(Date.now());
     };
@@ -84,6 +95,7 @@ export class CanvasEngine implements EngineContext {
     this.canvas.addEventListener("dragover", (e) => { e.preventDefault(); });
     this.canvas.addEventListener("drop", (e) => this.handleDrop(e));
     window.addEventListener("paste", (e) => this.handlePaste(e));
+    window.addEventListener("copy", (e) => this.handleCopy(e));
 
     this.addDemoContent();
   }
@@ -176,13 +188,17 @@ export class CanvasEngine implements EngineContext {
       }
     }
 
+    // Sync pages
+    this.store.setPages(this.sceneGraph.getPages().map((p) => ({ id: p.id, name: p.name })));
+    this.store.setActivePageIndex(this.sceneGraph.getActivePageIndex());
+
     const elements = this.sceneGraph.getElements();
     const layerInfos = [];
     for (let i = elements.length - 1; i >= 0; i--) {
       const el = elements[i];
       layerInfos.push({
         id: el.id,
-        name: el.name || `${el.type} ${el.id.replace("node_", "")}`,
+        name: el.name || `${this.getLayerLabel(el)} ${el.id.replace("node_", "")}`,
         type: el.type,
         visible: el.visible,
         locked: el.locked,
@@ -194,6 +210,23 @@ export class CanvasEngine implements EngineContext {
     this.store.setMetadataText(metadata.textSummary);
     this.store.setMetadataAscii(metadata.asciiArt);
     this.store.setMetadataJson(JSON.stringify(metadata.structuredJson, null, 2));
+  }
+
+  private getLayerLabel(el: BaseNode): string {
+    if (el instanceof PathNode) {
+      return el.endCap === "arrow" || el.startCap === "arrow" ? "Arrow" : "Line";
+    }
+    const typeLabels: Record<string, string> = {
+      rectangle: "Rectangle", text: "Text", image: "Image",
+      freehand: "Freehand", group: "Group", path: "Path",
+    };
+    return typeLabels[el.type] ?? el.type;
+  }
+
+  revertToSelectIfNotSticky(): void {
+    if (!this.stickyTools) {
+      this.setTool("select");
+    }
   }
 
   setMarquee(start: Point | null, end: Point | null): void {
@@ -223,11 +256,12 @@ export class CanvasEngine implements EngineContext {
     overlay.style.whiteSpace = "pre-wrap";
     overlay.style.zIndex = "1000";
 
+    // Position the overlay directly in the canvas parent's coordinate space
+    // The parent div is position:relative and the canvas fills it with inset-0
     const wt = node.getWorldTransform();
-    const screen = this.viewport.worldToScreen(wt[4], wt[5]);
-    const canvasRect = this.canvas.getBoundingClientRect();
-    overlay.style.left = `${canvasRect.left + screen.x}px`;
-    overlay.style.top = `${canvasRect.top + screen.y}px`;
+    const screenPos = this.viewport.worldToScreen(wt[4], wt[5]);
+    overlay.style.left = `${screenPos.x}px`;
+    overlay.style.top = `${screenPos.y}px`;
     overlay.style.fontSize = `${node.fontSize * this.viewport.state.zoom}px`;
 
     overlay.addEventListener("blur", () => {
@@ -322,11 +356,85 @@ export class CanvasEngine implements EngineContext {
   toggleAutoSave(): boolean {
     const newState = !this.autoSave.isEnabled();
     this.autoSave.setEnabled(newState);
+    localStorage.setItem("sf:autosave", String(newState));
     return newState;
   }
 
   isAutoSaveEnabled(): boolean {
     return this.autoSave.isEnabled();
+  }
+
+  switchPage(index: number): void {
+    this.sceneGraph.setActivePageIndex(index);
+    this.clearSelection();
+    this.syncStore();
+    this.requestRender();
+  }
+
+  addPage(): void {
+    this.sceneGraph.addPage();
+    this.clearSelection();
+    this.syncStore();
+    this.requestRender();
+  }
+
+  removePage(index: number): void {
+    this.sceneGraph.removePage(index);
+    this.clearSelection();
+    this.syncStore();
+    this.requestRender();
+  }
+
+  renamePage(index: number, name: string): void {
+    this.sceneGraph.renamePage(index, name);
+    this.syncStore();
+  }
+
+  toggleStickyTools(): void {
+    this.stickyTools = !this.stickyTools;
+    this.store?.setStickyTools(this.stickyTools);
+    localStorage.setItem("sf:stickyTools", String(this.stickyTools));
+    this.syncStore();
+  }
+
+  isStickyToolsEnabled(): boolean {
+    return this.stickyTools;
+  }
+
+  toggleGridSnapping(): void {
+    this.gridSnapping = !this.gridSnapping;
+    this.store?.setGridSnapping(this.gridSnapping);
+    localStorage.setItem("sf:gridSnapping", String(this.gridSnapping));
+    this.syncStore();
+  }
+
+  isGridSnappingEnabled(): boolean {
+    return this.gridSnapping;
+  }
+
+  /** Move a layer to a new position in the z-order.
+   *  layerIndex is in display order (0 = topmost = last child). */
+  reorderLayer(fromDisplayIndex: number, toDisplayIndex: number): void {
+    const page = this.sceneGraph.getActivePage();
+    const elements = page.children;
+    // Display order is reversed from children array order
+    const fromArrayIndex = elements.length - 1 - fromDisplayIndex;
+    const toArrayIndex = elements.length - 1 - toDisplayIndex;
+    if (fromArrayIndex < 0 || fromArrayIndex >= elements.length) return;
+    if (toArrayIndex < 0 || toArrayIndex >= elements.length) return;
+
+    const [node] = elements.splice(fromArrayIndex, 1);
+    elements.splice(toArrayIndex, 0, node);
+    this.syncStore();
+    this.requestRender();
+  }
+
+  renameLayer(id: string, name: string): void {
+    const node = this.sceneGraph.findById(id);
+    if (node) {
+      node.name = name;
+      this.syncStore();
+    }
   }
 
   toggleVisibility(id: string): void {
@@ -433,19 +541,91 @@ export class CanvasEngine implements EngineContext {
 
   // -- File operations --
 
-  saveProject(): void {
+  /** File handle for save-in-place (File System Access API, Chrome only) */
+  private fileHandle: FileSystemFileHandle | null = null;
+
+  /** Save to the existing file handle, or trigger Save As if none exists */
+  async saveProject(): Promise<void> {
+    if (this.fileHandle) {
+      await this.writeToFileHandle(this.fileHandle);
+    } else {
+      await this.saveProjectAs();
+    }
+  }
+
+  /** Always show the save dialog (Save As) */
+  async saveProjectAs(): Promise<void> {
     const data = serializeSceneGraph(this.sceneGraph);
     const json = JSON.stringify(data, null, 2);
     const blob = new Blob([json], { type: "application/json" });
+
+    // Try File System Access API first (Chrome/Edge)
+    if ("showSaveFilePicker" in window) {
+      try {
+        const handle = await (window as unknown as { showSaveFilePicker: (opts: unknown) => Promise<FileSystemFileHandle> }).showSaveFilePicker({
+          suggestedName: this.store?.fileName() ?? "project.sf",
+          types: [{
+            description: "SlashFigure Project",
+            accept: { "application/json": [".sf"] },
+          }],
+        });
+        this.fileHandle = handle;
+        const name = handle.name;
+        this.store?.setFileName(name);
+        await this.writeToFileHandle(handle);
+        return;
+      } catch {
+        // User cancelled or API not available
+        return;
+      }
+    }
+
+    // Fallback: download
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = "untitled.sf";
+    a.download = this.store?.fileName() ?? "project.sf";
     a.click();
     URL.revokeObjectURL(url);
   }
 
+  private async writeToFileHandle(handle: FileSystemFileHandle): Promise<void> {
+    const data = serializeSceneGraph(this.sceneGraph);
+    const json = JSON.stringify(data, null, 2);
+    const writable = await handle.createWritable();
+    await writable.write(json);
+    await writable.close();
+    this.store?.setLastSaveTime(Date.now());
+  }
+
   async loadProject(): Promise<void> {
+    // Try File System Access API first
+    if ("showOpenFilePicker" in window) {
+      try {
+        const [handle] = await (window as unknown as { showOpenFilePicker: (opts: unknown) => Promise<FileSystemFileHandle[]> }).showOpenFilePicker({
+          types: [{
+            description: "SlashFigure Project",
+            accept: { "application/json": [".sf"] },
+          }],
+        });
+        const file = await handle.getFile();
+        const text = await file.text();
+        const nodes = deserializeProject(JSON.parse(text));
+        const page = this.sceneGraph.getActivePage();
+        for (const child of [...page.children]) page.removeChild(child);
+        for (const node of nodes) this.sceneGraph.addElement(node);
+        this.fileHandle = handle;
+        this.store?.setFileName(handle.name);
+        this.clearSelection();
+        this.syncStore();
+        this.requestRender();
+        return;
+      } catch {
+        return;
+      }
+    }
+
+    // Fallback: file input
     const input = document.createElement("input");
     input.type = "file";
     input.accept = ".sf,application/json";
@@ -457,6 +637,8 @@ export class CanvasEngine implements EngineContext {
       const page = this.sceneGraph.getActivePage();
       for (const child of [...page.children]) page.removeChild(child);
       for (const node of nodes) this.sceneGraph.addElement(node);
+      this.fileHandle = null;
+      this.store?.setFileName(file.name);
       this.clearSelection();
       this.syncStore();
       this.requestRender();
@@ -638,6 +820,8 @@ export class CanvasEngine implements EngineContext {
         active instanceof HTMLTextAreaElement ||
         (active instanceof HTMLElement && active.isContentEditable)) return;
 
+    if (event.key === "Shift") this.shiftHeld = true;
+
     if (event.code === "Space" && !event.repeat) {
       this.spaceHeld = true;
       this.canvas.style.cursor = "grab";
@@ -653,6 +837,7 @@ export class CanvasEngine implements EngineContext {
     }
 
     // Save/Open
+    if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.code === "KeyS") { event.preventDefault(); this.saveProjectAs(); return; }
     if ((event.ctrlKey || event.metaKey) && event.code === "KeyS") { event.preventDefault(); this.saveProject(); }
     if ((event.ctrlKey || event.metaKey) && event.code === "KeyO") { event.preventDefault(); this.loadProject(); }
 
@@ -692,6 +877,7 @@ export class CanvasEngine implements EngineContext {
   }
 
   private handleKeyUp(event: KeyboardEvent): void {
+    if (event.key === "Shift") this.shiftHeld = false;
     if (event.code === "Space") {
       this.spaceHeld = false;
       if (!this.isPanning) {
@@ -707,8 +893,71 @@ export class CanvasEngine implements EngineContext {
 
   // -- Image drop --
 
+  private handleCopy(event: ClipboardEvent): void {
+    const active = document.activeElement;
+    if (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement ||
+        (active instanceof HTMLElement && active.isContentEditable)) return;
+    if (this.selectedIds.size === 0) return;
+
+    event.preventDefault();
+
+    // Serialize selected elements as JSON for slashfigure-to-slashfigure paste
+    const data = serializeSceneGraph(this.sceneGraph);
+    const selectedData = {
+      ...data,
+      _slashfigure: true,
+      elements: data.elements.filter((el) => this.selectedIds.has(el.id)),
+    };
+    event.clipboardData?.setData("text/plain", JSON.stringify(selectedData));
+
+    // Also render selected elements as PNG for paste into other programs
+    this.renderSelectionToPng().then((blob) => {
+      if (!blob) return;
+      navigator.clipboard.write([
+        new ClipboardItem({
+          "image/png": blob,
+          "text/plain": new Blob([JSON.stringify(selectedData)], { type: "text/plain" }),
+        }),
+      ]).catch(() => {
+        // Fallback: the synchronous clipboardData.setData above already set the text
+      });
+    });
+  }
+
+  /** Render only the selected elements to a PNG blob */
+  private renderSelectionToPng(): Promise<Blob | null> {
+    const selectedNodes: BaseNode[] = [];
+    for (const id of this.selectedIds) {
+      const node = this.sceneGraph.findById(id);
+      if (node && node.visible) selectedNodes.push(node);
+    }
+    if (selectedNodes.length === 0) return Promise.resolve(null);
+
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const el of selectedNodes) {
+      const b = el.getWorldBounds();
+      minX = Math.min(minX, b.x); minY = Math.min(minY, b.y);
+      maxX = Math.max(maxX, b.x + b.width); maxY = Math.max(maxY, b.y + b.height);
+    }
+
+    const padding = 10;
+    const dpr = 2;
+    const w = (maxX - minX + padding * 2) * dpr;
+    const h = (maxY - minY + padding * 2) * dpr;
+    const offscreen = document.createElement("canvas");
+    offscreen.width = w; offscreen.height = h;
+    const ctx = offscreen.getContext("2d")!;
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, w, h);
+    ctx.setTransform(dpr, 0, 0, dpr, (-minX + padding) * dpr, (-minY + padding) * dpr);
+    for (const el of selectedNodes) el.render(ctx);
+
+    return new Promise((resolve) => {
+      offscreen.toBlob((blob) => resolve(blob), "image/png");
+    });
+  }
+
   private handlePaste(event: ClipboardEvent): void {
-    // Don't intercept paste when typing in an input
     const active = document.activeElement;
     if (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement ||
         (active instanceof HTMLElement && active.isContentEditable)) return;
@@ -716,6 +965,25 @@ export class CanvasEngine implements EngineContext {
     const items = event.clipboardData?.items;
     if (!items) return;
 
+    // Can't read shiftKey from ClipboardEvent, track via keyboard state
+    const inPlace = this.shiftHeld;
+
+    // Read text synchronously before the event finishes
+    const text = event.clipboardData?.getData("text/plain");
+    if (text) {
+      try {
+        const data = JSON.parse(text);
+        if (data._slashfigure && data.elements) {
+          event.preventDefault();
+          this.pasteElements(data, inPlace);
+          return;
+        }
+      } catch {
+        // Not our JSON, fall through
+      }
+    }
+
+    // Check for images
     for (const item of items) {
       if (item.type.startsWith("image/")) {
         event.preventDefault();
@@ -725,7 +993,6 @@ export class CanvasEngine implements EngineContext {
         const reader = new FileReader();
         reader.onload = () => {
           const dataUrl = reader.result as string;
-          // Place at center of current viewport
           const centerScreen = { x: this.canvas.width / 2, y: this.canvas.height / 2 };
           const world = this.viewport.screenToWorld(centerScreen.x, centerScreen.y);
 
@@ -734,7 +1001,6 @@ export class CanvasEngine implements EngineContext {
           node.style = { ...node.style, strokeWidth: 0 };
           node.loadImage(dataUrl).then(() => {
             if (node.width > 400) { const s = 400 / node.width; node.width *= s; node.height *= s; }
-            // Center the image on the paste point
             node.x -= node.width / 2;
             node.y -= node.height / 2;
             this.requestRender();
@@ -754,6 +1020,38 @@ export class CanvasEngine implements EngineContext {
         return;
       }
     }
+  }
+
+  /** Paste elements with new IDs.
+   *  inPlace=false: offset by 20px so they don't overlap originals (Ctrl+V)
+   *  inPlace=true: paste at exact same position (Ctrl+Shift+V) */
+  private pasteElements(data: { elements: Array<Record<string, unknown>> }, inPlace: boolean): void {
+    const nodes = deserializeProject(data as unknown as ReturnType<typeof serializeSceneGraph>);
+    if (nodes.length === 0) return;
+
+    const PASTE_OFFSET = inPlace ? 0 : 20;
+
+    this.clearSelection();
+    const sg = this.sceneGraph;
+    const pastedNodes: BaseNode[] = [];
+
+    for (const node of nodes) {
+      const newId = `node_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+      Object.defineProperty(node, "id", { value: newId, writable: false });
+      node.x += PASTE_OFFSET;
+      node.y += PASTE_OFFSET;
+      sg.addElement(node);
+      this.selectedIds.add(node.id);
+      pastedNodes.push(node);
+    }
+
+    this.undoManager.pushExecuted({
+      execute: () => { for (const n of pastedNodes) { if (!sg.findById(n.id)) sg.addElement(n); } },
+      undo: () => { for (const n of pastedNodes) sg.removeElement(n); },
+    });
+
+    this.syncStore();
+    this.requestRender();
   }
 
   private handleDrop(event: DragEvent): void {

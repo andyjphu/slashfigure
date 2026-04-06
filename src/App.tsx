@@ -5,6 +5,7 @@ import { Toolbar } from "./ui/Toolbar";
 import { PropertiesPanel } from "./ui/PropertiesPanel";
 import { MetadataPanel } from "./ui/MetadataPanel";
 import { StatusBar } from "./ui/StatusBar";
+import { PageTabs } from "./ui/PageTabs";
 
 export default function App() {
   let canvasReference: HTMLCanvasElement | undefined;
@@ -56,17 +57,33 @@ export default function App() {
           selectedIds={store.selectedIds}
           onLayerSelect={(id, mode) => engine?.selectElement(id, mode)}
           onToggleVisibility={(id) => engine?.toggleVisibility(id)}
+          onRenameLayer={(id, name) => engine?.renameLayer(id, name)}
+          onReorderLayer={(from, to) => engine?.reorderLayer(from, to)}
           onSave={() => engine?.saveProject()}
+          onSaveAs={() => engine?.saveProjectAs()}
           onLoad={() => engine?.loadProject()}
           onExportSvg={() => engine?.exportSvgFile()}
           onExportPng={() => engine?.exportPngFile()}
           onExportPdf={() => engine?.exportPdfFile()}
           onToggleAutoSave={() => { engine?.toggleAutoSave(); }}
           isAutoSaveEnabled={() => engine?.isAutoSaveEnabled() ?? true}
+          onToggleGridSnapping={() => { engine?.toggleGridSnapping(); }}
+          isGridSnappingEnabled={() => engine?.isGridSnappingEnabled() ?? false}
+          onToggleStickyTools={() => { engine?.toggleStickyTools(); }}
+          isStickyToolsEnabled={() => engine?.isStickyToolsEnabled() ?? false}
         />
 
-        {/* Canvas */}
-        <div class="relative min-w-0 flex-1">
+        {/* Center: page tabs + canvas */}
+        <div class="flex min-w-0 flex-1 flex-col">
+          <PageTabs
+            pages={store.pages}
+            activePageIndex={store.activePageIndex}
+            onSwitchPage={(i) => engine?.switchPage(i)}
+            onAddPage={() => engine?.addPage()}
+            onRemovePage={(i) => engine?.removePage(i)}
+            onRenamePage={(i, n) => engine?.renamePage(i, n)}
+          />
+          <div class="relative flex-1">
           <canvas
             ref={canvasReference}
             class="absolute inset-0 h-full w-full"
@@ -77,6 +94,7 @@ export default function App() {
             onDblClick={(event) => engine?.handleDoubleClick(event)}
             onContextMenu={(event) => event.preventDefault()}
           />
+          </div>
         </div>
 
         {/* Right sidebar -- border-left doubles as drag handle via padding-left hit area */}
@@ -114,7 +132,7 @@ export default function App() {
       </div>
 
       {/* Bottom status bar */}
-      <StatusBar zoom={store.zoom} selectedCount={() => store.selectedIds().size} lastSaveTime={store.lastSaveTime} />
+      <StatusBar zoom={store.zoom} selectedCount={() => store.selectedIds().size} lastSaveTime={store.lastSaveTime} fileName={store.fileName} />
     </div>
   );
 }

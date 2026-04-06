@@ -8,9 +8,10 @@ import {
   MARQUEE_FILL, MARQUEE_STROKE,
 } from "./theme";
 
+import { GRID_SIZE } from "./GridSnap";
+
 const DOT_COLOR = "#c0c0c0";
 const DOT_RADIUS = 1;
-const GRID_SIZE = 20;
 const BACKGROUND_COLOR = "#ffffff";
 
 /**
@@ -78,6 +79,7 @@ export class Renderer {
     if (selectedIds.size > 0) {
       this.renderSelectionOverlays(elements, viewport, selectedIds, selectedVertices);
     }
+
   }
 
   private renderElement(element: BaseNode, viewport: Viewport): void {
@@ -284,5 +286,6 @@ export class Renderer {
       context.strokeRect(pos.x - halfHandle, pos.y - halfHandle, handleSize, handleSize);
     }
   }
+
 
 }

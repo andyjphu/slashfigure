@@ -24,6 +24,7 @@ export class TextTool implements Tool {
       undo: () => { sg.removeElement(node); },
     });
 
+    context.revertToSelectIfNotSticky();
     context.syncStore();
     context.requestRender();
 

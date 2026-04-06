@@ -4,6 +4,7 @@ import type { Point, BoundingBox } from "../types";
 import type { BaseNode } from "../nodes/BaseNode";
 import { PathNode } from "../nodes/PathNode";
 import { invertMatrix, transformPoint } from "../Transform";
+import { snapToGrid, snapValue } from "../GridSnap";
 import { hitTestHandles, hitTestRotation, applyResize } from "../ResizeHandle";
 import type { HandlePosition } from "../ResizeHandle";
 import { ROTATE_CURSOR } from "../cursors";
@@ -104,14 +105,15 @@ export class SelectTool implements Tool {
     const drag = this.drag;
 
     if (drag.type === "move") {
-      const dx = world.x - this.dragStartWorld.x;
-      const dy = world.y - this.dragStartWorld.y;
+      // Snap the resulting position, not the delta, so elements land on grid lines
+      const rawDx = world.x - this.dragStartWorld.x;
+      const rawDy = world.y - this.dragStartWorld.y;
       for (const id of context.selectedIds) {
         const node = context.sceneGraph.findById(id);
         const orig = drag.originalPositions.get(id);
         if (node && orig) {
-          node.x = orig.x + dx;
-          node.y = orig.y + dy;
+          node.x = snapValue(orig.x + rawDx, context.gridSnapping);
+          node.y = snapValue(orig.y + rawDy, context.gridSnapping);
           node.markTransformDirty();
         }
       }
@@ -130,10 +132,15 @@ export class SelectTool implements Tool {
         const localDx = worldDx * cos + worldDy * sin;
         const localDy = -worldDx * sin + worldDy * cos;
         const result = applyResize(drag.handle, 0, 0, drag.original.width, drag.original.height, localDx, localDy);
+        // Snap the resulting dimensions and position to grid
+        result.width = snapValue(result.width, context.gridSnapping);
+        result.height = snapValue(result.height, context.gridSnapping);
+        result.x = snapValue(result.x, context.gridSnapping);
+        result.y = snapValue(result.y, context.gridSnapping);
         const parentShiftX = result.x * cos - result.y * sin;
         const parentShiftY = result.x * sin + result.y * cos;
-        node.x = drag.original.x + parentShiftX;
-        node.y = drag.original.y + parentShiftY;
+        node.x = snapValue(drag.original.x + parentShiftX, context.gridSnapping);
+        node.y = snapValue(drag.original.y + parentShiftY, context.gridSnapping);
         node.width = result.width;
         node.height = result.height;
         node.markTransformDirty();
@@ -160,8 +167,9 @@ export class SelectTool implements Tool {
     if (drag.type === "vertex") {
       const node = context.sceneGraph.findById(drag.nodeId);
       if (node && node.hasVertices()) {
+        const snapped = snapToGrid(world, context.gridSnapping);
         const invWorld = invertMatrix(node.getWorldTransform());
-        const local = transformPoint(invWorld, world);
+        const local = transformPoint(invWorld, snapped);
         node.setVertex(drag.vertexIndex, local.x, local.y);
         context.syncStore();
         context.requestRender();
@@ -170,12 +178,20 @@ export class SelectTool implements Tool {
     }
 
     if (drag.type === "marquee") {
-      context.setMarquee(null, null); // clear first to get fresh start
+      context.setMarquee(null, null);
       context.clearSelection();
       const minX = Math.min(this.dragStartWorld.x, world.x);
       const minY = Math.min(this.dragStartWorld.y, world.y);
       const maxX = Math.max(this.dragStartWorld.x, world.x);
       const maxY = Math.max(this.dragStartWorld.y, world.y);
+      // Ignore tiny marquees (accidental micro-drags)
+      const marqueeWidth = maxX - minX;
+      const marqueeHeight = maxY - minY;
+      if (marqueeWidth < 3 / context.viewport.state.zoom && marqueeHeight < 3 / context.viewport.state.zoom) {
+        context.syncStore();
+        context.requestRender();
+        return;
+      }
       for (const el of context.sceneGraph.getElements()) {
         const b = el.getWorldBounds();
         if (b.x + b.width >= minX && b.x <= maxX && b.y + b.height >= minY && b.y <= maxY) {

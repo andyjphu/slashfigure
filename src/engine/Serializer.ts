@@ -1,4 +1,4 @@
-import type { BaseNode } from "./nodes/BaseNode";
+import { type BaseNode, ensureNodeIdCounter } from "./nodes/BaseNode";
 import { RectangleNode } from "./nodes/RectangleNode";
 import { TextNode } from "./nodes/TextNode";
 import { PathNode } from "./nodes/PathNode";
@@ -110,6 +110,9 @@ export function deserializeProject(data: SerializedProject): BaseNode[] {
 }
 
 function deserializeNode(data: SerializedNode): BaseNode {
+  // Advance the global ID counter past this ID so new nodes don't collide
+  ensureNodeIdCounter(data.id);
+
   let node: BaseNode;
 
   switch (data.type) {

@@ -3,6 +3,7 @@ import type { EngineContext } from "./EngineContext";
 import type { Point } from "../types";
 import { RectangleNode } from "../nodes/RectangleNode";
 import { DEFAULT_RECT_FILL, DEFAULT_RECT_STROKE } from "../theme";
+import { snapToGrid } from "../GridSnap";
 
 export class RectangleTool implements Tool {
   readonly id = "rectangle";
@@ -10,22 +11,24 @@ export class RectangleTool implements Tool {
   private startWorld: Point = { x: 0, y: 0 };
 
   onPointerDown(context: EngineContext, world: Point, _event: PointerEvent): void {
+    const snapped = snapToGrid(world, context.gridSnapping);
     const node = new RectangleNode();
-    node.x = world.x;
-    node.y = world.y;
+    node.x = snapped.x;
+    node.y = snapped.y;
     node.style = { ...node.style, fillColor: DEFAULT_RECT_FILL, strokeColor: DEFAULT_RECT_STROKE, strokeWidth: 2, cornerRadius: 4 };
     context.sceneGraph.addElement(node);
     this.creatingNode = node;
-    this.startWorld = world;
+    this.startWorld = snapped;
     context.requestRender();
   }
 
   onPointerMove(context: EngineContext, world: Point, _event: PointerEvent): void {
     if (!this.creatingNode) return;
-    this.creatingNode.x = Math.min(this.startWorld.x, world.x);
-    this.creatingNode.y = Math.min(this.startWorld.y, world.y);
-    this.creatingNode.width = Math.abs(world.x - this.startWorld.x);
-    this.creatingNode.height = Math.abs(world.y - this.startWorld.y);
+    const snapped = snapToGrid(world, context.gridSnapping);
+    this.creatingNode.x = Math.min(this.startWorld.x, snapped.x);
+    this.creatingNode.y = Math.min(this.startWorld.y, snapped.y);
+    this.creatingNode.width = Math.abs(snapped.x - this.startWorld.x);
+    this.creatingNode.height = Math.abs(snapped.y - this.startWorld.y);
     this.creatingNode.markTransformDirty();
     context.requestRender();
   }
@@ -47,6 +50,7 @@ export class RectangleTool implements Tool {
       execute: () => { if (!sg.findById(node.id)) sg.addElement(node); },
       undo: () => { sg.removeElement(node); },
     });
+    context.revertToSelectIfNotSticky();
     context.syncStore();
     context.requestRender();
   }

@@ -14,6 +14,17 @@ function generateNodeId(): string {
   return `node_${nextNodeId++}`;
 }
 
+/** Advance the ID counter past any existing IDs (call after deserializing) */
+export function ensureNodeIdCounter(existingId: string): void {
+  const match = existingId.match(/^node_(\d+)$/);
+  if (match) {
+    const num = parseInt(match[1], 10);
+    if (num >= nextNodeId) {
+      nextNodeId = num + 1;
+    }
+  }
+}
+
 /**
  * Base class for all scene graph nodes.
  * Stores position, dimensions, rotation, style, and manages

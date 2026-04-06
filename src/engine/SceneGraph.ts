@@ -1,9 +1,11 @@
 import { GroupNode } from "./nodes/GroupNode";
 import type { BaseNode } from "./nodes/BaseNode";
 
+let nextPageId = 1;
+
 /**
  * The scene graph: Document > Page > Elements.
- * Owns the tree structure. Provides methods to add/remove/query elements.
+ * Supports multiple pages with an active page concept.
  */
 export class SceneGraph {
   readonly document: GroupNode;
@@ -13,8 +15,7 @@ export class SceneGraph {
     this.document = new GroupNode("document", "doc_root");
     this.document.name = "Document";
 
-    // Create initial page
-    const firstPage = new GroupNode("page", "page_1");
+    const firstPage = new GroupNode("page", `page_${nextPageId++}`);
     firstPage.name = "Page 1";
     this.document.addChild(firstPage);
     this.activePage = firstPage;
@@ -22,6 +23,54 @@ export class SceneGraph {
 
   getActivePage(): GroupNode {
     return this.activePage;
+  }
+
+  /** Get all pages */
+  getPages(): GroupNode[] {
+    return this.document.children as GroupNode[];
+  }
+
+  /** Get the index of the active page */
+  getActivePageIndex(): number {
+    return this.getPages().indexOf(this.activePage);
+  }
+
+  /** Switch to a page by index */
+  setActivePageIndex(index: number): void {
+    const pages = this.getPages();
+    if (index >= 0 && index < pages.length) {
+      this.activePage = pages[index];
+    }
+  }
+
+  /** Add a new page and switch to it */
+  addPage(name?: string): GroupNode {
+    const page = new GroupNode("page", `page_${nextPageId++}`);
+    page.name = name ?? `Page ${this.getPages().length + 1}`;
+    this.document.addChild(page);
+    this.activePage = page;
+    return page;
+  }
+
+  /** Remove a page by index. Cannot remove the last page. */
+  removePage(index: number): void {
+    const pages = this.getPages();
+    if (pages.length <= 1) return;
+    const page = pages[index];
+    this.document.removeChild(page);
+    // If we removed the active page, switch to the nearest one
+    if (this.activePage === page) {
+      const newIndex = Math.min(index, pages.length - 2);
+      this.activePage = this.getPages()[newIndex];
+    }
+  }
+
+  /** Rename a page */
+  renamePage(index: number, name: string): void {
+    const pages = this.getPages();
+    if (index >= 0 && index < pages.length) {
+      pages[index].name = name;
+    }
   }
 
   /** Add an element to the active page */
@@ -36,7 +85,7 @@ export class SceneGraph {
     }
   }
 
-  /** Find a node by ID via DFS */
+  /** Find a node by ID via DFS (searches all pages) */
   findById(id: string): BaseNode | null {
     return this.findInSubtree(this.document, id);
   }
@@ -50,7 +99,7 @@ export class SceneGraph {
     return null;
   }
 
-  /** Get all leaf elements on the active page (for rendering and hit testing) */
+  /** Get all elements on the active page */
   getElements(): BaseNode[] {
     return this.activePage.children;
   }

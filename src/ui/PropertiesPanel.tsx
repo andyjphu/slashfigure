@@ -285,7 +285,15 @@ function SectionLabel(props: { children: string }) {
 
 export function PropertiesPanel(props: PropertiesPanelProps) {
   const hasSelection = () => props.selectedIds().size > 0;
-  const isImage = () => props.selectionType() === "image";
+  const selType = () => props.selectionType();
+  const isImage = () => selType() === "image";
+  const isMulti = () => props.selectedIds().size > 1;
+
+  // Multi-select shows all controls (superset). Single-select shows type-specific.
+  const showCornerRadius = () => isMulti() || selType() === "rectangle" || selType() === "image";
+  const showFill = () => isMulti() || (selType() !== "path" && selType() !== "freehand");
+  const showStroke = () => isMulti() || (selType() !== "freehand" && selType() !== "image");
+  const showRotation = () => isMulti() || selType() !== "path";
 
   return (
     <div
@@ -316,21 +324,25 @@ export function PropertiesPanel(props: PropertiesPanelProps) {
               <MixedNumericInput label="H" value={() => props.selectionPosition().height}
                 onChange={(v) => props.onTransformChange({ height: v })}
                 onRelativeChange={(d) => props.onRelativeTransformChange("height", d)} step={1} />
-              <MixedNumericInput label="A"
-                value={() => {
-                  const r = props.selectionPosition().rotation;
-                  return r === "mixed" ? "mixed" : Math.round(r * 180 / Math.PI * 100) / 100;
-                }}
-                onChange={(v) => props.onTransformChange({ rotation: v * Math.PI / 180 })}
-                onRelativeChange={(d) => props.onRelativeTransformChange("rotation", d * Math.PI / 180)} step={1} />
-              <MixedNumericInput label="R" value={() => props.selectionStyle().cornerRadius}
-                onChange={(v) => props.onStyleChange({ cornerRadius: v })}
-                onRelativeChange={(d) => props.onRelativeStyleChange("cornerRadius", d)} step={1} />
+              {showRotation() && (
+                <MixedNumericInput label="A"
+                  value={() => {
+                    const r = props.selectionPosition().rotation;
+                    return r === "mixed" ? "mixed" : Math.round(r * 180 / Math.PI * 100) / 100;
+                  }}
+                  onChange={(v) => props.onTransformChange({ rotation: v * Math.PI / 180 })}
+                  onRelativeChange={(d) => props.onRelativeTransformChange("rotation", d * Math.PI / 180)} step={1} />
+              )}
+              {showCornerRadius() && (
+                <MixedNumericInput label="R" value={() => props.selectionStyle().cornerRadius}
+                  onChange={(v) => props.onStyleChange({ cornerRadius: v })}
+                  onRelativeChange={(d) => props.onRelativeStyleChange("cornerRadius", d)} step={1} />
+              )}
             </div>
           </div>
 
           {/* Fill */}
-          <div class="flex flex-col gap-2 border-b border-gray-100 px-3 py-3">
+          {showFill() && <div class="flex flex-col gap-2 border-b border-gray-100 px-3 py-3">
             <SectionLabel>Fill</SectionLabel>
             {isImage() ? (
               <ImageFillRow
@@ -355,10 +367,10 @@ export function PropertiesPanel(props: PropertiesPanelProps) {
                 }}
               />
             )}
-          </div>
+          </div>}
 
           {/* Stroke */}
-          <div class="flex flex-col gap-2 px-3 py-3">
+          {showStroke() && <div class="flex flex-col gap-2 px-3 py-3">
             <SectionLabel>Stroke</SectionLabel>
             <FillStrokeRow
               color={() => props.selectionStyle().strokeColor}
@@ -376,7 +388,7 @@ export function PropertiesPanel(props: PropertiesPanelProps) {
                 onChange={(v) => props.onStyleChange({ strokeWidth: v })}
                 onRelativeChange={(d) => props.onRelativeStyleChange("strokeWidth", d)} step={1} />
             </div>
-          </div>
+          </div>}
         </div>
       </Show>
     </div>

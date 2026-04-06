@@ -66,11 +66,20 @@ export function createEngineStore() {
   // Type of the first selected element (for conditional UI like image fill)
   const [selectionType, setSelectionType] = createSignal<string | null>(null);
 
+  // Pages
+  const [pages, setPages] = createSignal<Array<{ id: string; name: string }>>([]);
+  const [activePageIndex, setActivePageIndex] = createSignal(0);
+
+  // Settings
+  const [gridSnapping, setGridSnapping] = createSignal(false);
+  const [stickyTools, setStickyTools] = createSignal(false);
+
   // Layer list for the layers panel (top = front, bottom = back)
   const [layers, setLayers] = createSignal<LayerInfo[]>([]);
 
   // Autosave status
   const [lastSaveTime, setLastSaveTime] = createSignal<number | null>(null);
+  const [fileName, setFileName] = createSignal("project.sf");
 
   // Metadata for the metadata panel
   const [metadataText, setMetadataText] = createSignal("");
@@ -90,6 +99,14 @@ export function createEngineStore() {
     setSelectionPosition,
     selectionType,
     setSelectionType,
+    gridSnapping,
+    setGridSnapping,
+    stickyTools,
+    setStickyTools,
+    pages,
+    setPages,
+    activePageIndex,
+    setActivePageIndex,
     layers,
     setLayers,
     metadataText,
@@ -100,6 +117,8 @@ export function createEngineStore() {
     setMetadataJson,
     lastSaveTime,
     setLastSaveTime,
+    fileName,
+    setFileName,
   };
 }
 

@@ -28,8 +28,15 @@ export interface EngineContext {
   // Marquee
   setMarquee(start: Point | null, end: Point | null): void;
 
+  // Tool management
+  revertToSelectIfNotSticky(): void;
+
   // Text editing
   startTextEditing(nodeId: string): void;
+
+  // Settings
+  readonly gridSnapping: boolean;
+  readonly stickyTools: boolean;
 
   // Utility
   lastStyleChangeTime: number;

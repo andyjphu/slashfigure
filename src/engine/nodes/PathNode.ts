@@ -21,6 +21,7 @@ export class PathNode extends BaseNode {
   /** Cap decoration at the last vertex */
   endCap: CapStyle = "none";
 
+
   // -- Vertex interface --
 
   hasVertices(): boolean { return true; }
@@ -181,7 +182,7 @@ export class PathNode extends BaseNode {
     if (this.vertices.length === 0) return super.getWorldBounds();
 
     const worldTransform = this.getWorldTransform();
-    const padding = this.style.strokeWidth + 5;
+    const padding = this.style.strokeWidth / 2 + 2;
     let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
 
     for (const vertex of this.vertices) {

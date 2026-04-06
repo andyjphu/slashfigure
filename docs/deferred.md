@@ -26,6 +26,11 @@ Features and decisions explicitly deferred to post-MVP. Review after MVP launch.
 
 ### Drawing Primitives (post-MVP)
 - Ellipse, circle, triangle, polygon, star
+- **Arrow anchor binding to shapes** -- Attempted 3 times, each with different algorithms. Issues encountered:
+  1. Fixed 16-point grid: unnatural snapping, too many visual indicators, couldn't pull arrows off shapes
+  2. Nearest-edge-point (perpendicular projection): wrong algorithm entirely -- gives perpendicular closest point, not directional intersection
+  3. Center-directed ray intersection (mxGraph atan2 approach): correct algorithm per research, but binding update logic still caused arrows to fight user drags and jump unpredictably when shapes moved
+  Root cause: the interaction between binding updates in syncStore (runs every frame), vertex dragging in SelectTool, and the arrow creation tool creates complex state conflicts that need careful sequencing. The research document at `docs/research/arrow-anchoring/arrow-anchoring.md` has the correct algorithms from draw.io (mxGraph), tldraw, and Excalidraw. Key insight: tldraw's approach (binding activates when cursor is OVER the shape, not near it; `normalizedAnchor` stored per binding; `isPrecise` flag) is likely the cleanest model. Needs a dedicated implementation sprint with proper state machine for binding lifecycle (unbound → hovering → snapping → bound → dragging → unbound).
 - Curved paths (Bezier) -- includes arrow midpoint insertion (hover mid-section to add vertex, drag to curve)
 - **Flip via resize drag-through** -- drag an edge past the opposite edge to mirror the shape (PowerPoint-style). Attempted and reverted. Approaches tried and their failure modes:
   1. **Normalize in `applyResize` + scaleX/scaleY toggle**: Handle names ("top", "left") no longer match visual positions after flip. Remapping handle names by scale sign partially worked but broke when combined with rotation. Resize on flipped+rotated shapes moved the wrong edge.

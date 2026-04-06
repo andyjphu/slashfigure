@@ -30,14 +30,34 @@ export class TextNode extends BaseNode {
     context.font = `${this.fontWeight} ${this.fontSize}px ${this.fontFamily}`;
     context.textAlign = this.textAlign;
     context.textBaseline = "top";
-    context.fillStyle = this.style.fillColor;
 
-    // Wrap text within width if width is set
-    if (this.width > 0) {
-      this.renderWrappedText(context);
-    } else {
-      context.fillText(this.content, 0, 0);
-      // Auto-size: measure the text and update dimensions
+    // Fill text
+    if (this.style.fillVisible && this.style.fillOpacity > 0) {
+      context.globalAlpha = this.style.opacity * this.style.fillOpacity;
+      context.fillStyle = this.style.fillColor;
+      if (this.width > 0) {
+        this.renderWrappedText(context, "fill");
+      } else {
+        context.fillText(this.content, 0, 0);
+      }
+    }
+
+    // Stroke text (outline)
+    if (this.style.strokeVisible && this.style.strokeWidth > 0 && this.style.strokeOpacity > 0) {
+      context.globalAlpha = this.style.opacity * this.style.strokeOpacity;
+      context.strokeStyle = this.style.strokeColor;
+      context.lineWidth = this.style.strokeWidth;
+      context.lineJoin = "round";
+      if (this.width > 0) {
+        this.renderWrappedText(context, "stroke");
+      } else {
+        context.strokeText(this.content, 0, 0);
+      }
+    }
+
+    // Auto-size if no fixed width
+    if (this.width <= 0) {
+      context.fillStyle = this.style.fillColor;
       const metrics = context.measureText(this.content);
       this.width = metrics.width;
       this.height = this.fontSize * 1.2;
@@ -46,17 +66,17 @@ export class TextNode extends BaseNode {
     context.restore();
   }
 
-  private renderWrappedText(context: CanvasRenderingContext2D): void {
+  private renderWrappedText(context: CanvasRenderingContext2D, mode: "fill" | "stroke"): void {
     const lines = this.getWrappedLines(context);
     const lineHeight = this.fontSize * 1.4;
     let y = 0;
 
     for (const line of lines) {
-      context.fillText(line, 0, y);
+      if (mode === "fill") context.fillText(line, 0, y);
+      else context.strokeText(line, 0, y);
       y += lineHeight;
     }
 
-    // Update height based on actual rendered lines
     this.height = Math.max(lineHeight, y);
   }
 

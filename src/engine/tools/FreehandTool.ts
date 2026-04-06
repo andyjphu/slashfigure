@@ -44,6 +44,7 @@ export class FreehandTool implements Tool {
       execute: () => { if (!sg.findById(node.id)) sg.addElement(node); },
       undo: () => { sg.removeElement(node); },
     });
+    context.revertToSelectIfNotSticky();
     context.syncStore();
     context.requestRender();
   }
