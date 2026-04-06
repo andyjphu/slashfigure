@@ -828,6 +828,35 @@ export class CanvasEngine implements EngineContext {
       event.preventDefault();
     }
 
+    // Select all (Ctrl+Shift+A = everything, Ctrl+A = visible in viewport only)
+    if ((event.ctrlKey || event.metaKey) && event.code === "KeyA") {
+      event.preventDefault();
+      this.clearSelection();
+      if (event.shiftKey) {
+        // All layers, hidden or not, regardless of viewport
+        for (const el of this.sceneGraph.getElements()) {
+          this.selectedIds.add(el.id);
+        }
+      } else {
+        // Only visible layers at least partially in viewport
+        const canvasW = this.canvas.width / (window.devicePixelRatio || 1);
+        const canvasH = this.canvas.height / (window.devicePixelRatio || 1);
+        const vpTopLeft = this.viewport.screenToWorld(0, 0);
+        const vpBottomRight = this.viewport.screenToWorld(canvasW, canvasH);
+        for (const el of this.sceneGraph.getElements()) {
+          if (!el.visible) continue;
+          const b = el.getWorldBounds();
+          if (b.x + b.width >= vpTopLeft.x && b.x <= vpBottomRight.x &&
+              b.y + b.height >= vpTopLeft.y && b.y <= vpBottomRight.y) {
+            this.selectedIds.add(el.id);
+          }
+        }
+      }
+      this.syncStore();
+      this.requestRender();
+      return;
+    }
+
     // Tool shortcuts
     const toolShortcuts: Record<string, string> = {
       KeyV: "select", KeyR: "rectangle", KeyT: "text", KeyA: "arrow", KeyP: "freehand",

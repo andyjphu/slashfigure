@@ -78,7 +78,6 @@ export function PageTabs(props: PageTabsProps) {
                 class="hidden shrink-0 text-gray-400 hover:text-gray-600 group-hover:block"
                 onClick={(e) => {
                   e.stopPropagation();
-                  if (clickTimer) { clearTimeout(clickTimer); clickTimer = null; }
                   if (confirm(`Delete "${page.name}"? This cannot be undone.`)) {
                     props.onRemovePage(index());
                   }
