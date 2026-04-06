@@ -1,68 +1,57 @@
 import { SceneGraph } from "./SceneGraph";
+import { serializeSceneGraph, deserializeProject } from "./Serializer";
+import { AutoSave } from "./AutoSave";
+import { generateMetadata } from "./MetadataGenerator";
 import { Viewport } from "./Viewport";
 import { Renderer } from "./Renderer";
 import { UndoManager } from "./UndoManager";
-import { RectangleNode } from "./nodes/RectangleNode";
-import { TextNode } from "./nodes/TextNode";
-import { ArrowNode } from "./nodes/ArrowNode";
 import { ImageNode } from "./nodes/ImageNode";
+import { TextNode } from "./nodes/TextNode";
+import { RectangleNode } from "./nodes/RectangleNode";
 import type { BaseNode } from "./nodes/BaseNode";
-import type { Point, StyleProperties, BoundingBox } from "./types";
+import type { Point, StyleProperties } from "./types";
 import type { EngineStore, ToolMode } from "./EngineStore";
-import { hitTestHandles, hitTestRotation, applyResize } from "./ResizeHandle";
-import type { HandlePosition } from "./ResizeHandle";
-import { ROTATE_CURSOR } from "./cursors";
-import {
-  DEFAULT_RECT_FILL, DEFAULT_RECT_STROKE, DEFAULT_TEXT_FILL,
-  DEFAULT_ARROW_STROKE, TEXT_EDIT_BORDER,
-} from "./theme";
-
-interface DragState {
-  type: "pan" | "move" | "create" | "marquee" | "resize" | "rotate" | "arrow" | "arrow-endpoint" | "none";
-  startWorld: Point;
-  startScreen: Point;
-  originalPositions?: Map<string, Point>;
-  originalDimensions?: Map<string, { x: number; y: number; width: number; height: number }>;
-  creatingNode?: BaseNode;
-  resizeHandle?: HandlePosition;
-  resizeNodeId?: string;
-  rotateNodeId?: string;
-  originalRotation?: number;
-  /** Angle from element center to the point where rotation drag started */
-  startAngle?: number;
-  /** Which arrow endpoint is being dragged: "start" or "end" */
-  arrowEndpoint?: "start" | "end";
-  arrowNodeId?: string;
-  originalArrowStart?: Point;
-  originalArrowEnd?: Point;
-}
+import { createToolRegistry } from "./tools/ToolRegistry";
+import type { Tool } from "./tools/Tool";
+import type { EngineContext } from "./tools/EngineContext";
+import { TEXT_EDIT_BORDER } from "./theme";
 
 /**
- * The main canvas engine. Owns the scene graph, viewport, renderer,
- * undo manager, and input handling.
+ * The main canvas engine. Slim coordinator that delegates input to tools,
+ * manages lifecycle, and bridges the engine to the SolidJS UI via EngineStore.
  */
-export class CanvasEngine {
-  private sceneGraph: SceneGraph;
-  private viewport: Viewport;
+export class CanvasEngine implements EngineContext {
+  readonly sceneGraph: SceneGraph;
+  readonly viewport: Viewport;
+  readonly undoManager: UndoManager;
+  readonly canvas: HTMLCanvasElement;
+
   private renderer: Renderer;
-  private undoManager: UndoManager;
-  private canvas: HTMLCanvasElement;
+  private autoSave: AutoSave;
   private store: EngineStore | null = null;
+  private tools: Map<string, Tool>;
+  private activeTool: Tool;
 
   private animationFrameId: number | null = null;
   private needsRender: boolean = true;
 
-  private toolMode: ToolMode = "select";
-  private selectedIds: Set<string> = new Set();
-  private dragState: DragState = { type: "none", startWorld: { x: 0, y: 0 }, startScreen: { x: 0, y: 0 } };
-  private spaceHeld: boolean = false;
+  // Selection state (part of EngineContext interface)
+  readonly selectedIds: Set<string> = new Set();
+  readonly selectedVertexMap: Map<string, Set<number>> = new Map();
+  lastStyleChangeTime: number = 0;
+
+  // Marquee state
   private marqueeStart: Point | null = null;
   private marqueeEnd: Point | null = null;
 
-  // Text editing overlay
+  // Pan state
+  private spaceHeld: boolean = false;
+  private isPanning: boolean = false;
+  private panStartScreen: Point = { x: 0, y: 0 };
+
+  // Text editing
   private editingTextNodeId: string | null = null;
   private textOverlay: HTMLDivElement | null = null;
-  private lastStyleChangeTime: number = 0;
 
   constructor(canvas: HTMLCanvasElement, store?: EngineStore) {
     this.canvas = canvas;
@@ -71,6 +60,10 @@ export class CanvasEngine {
     this.viewport = new Viewport();
     this.renderer = new Renderer(canvas);
     this.undoManager = new UndoManager();
+    this.autoSave = new AutoSave();
+
+    this.tools = createToolRegistry();
+    this.activeTool = this.tools.get("select")!;
 
     this.handleKeyDown = this.handleKeyDown.bind(this);
     this.handleKeyUp = this.handleKeyUp.bind(this);
@@ -80,712 +73,140 @@ export class CanvasEngine {
     this.handleResize = this.handleResize.bind(this);
     window.addEventListener("resize", this.handleResize);
 
-    // Drag-and-drop image import
+    window.addEventListener("beforeunload", () => {
+      this.autoSave.saveNow(serializeSceneGraph(this.sceneGraph));
+    });
+
+    this.autoSave.onSaved = () => {
+      this.store?.setLastSaveTime(Date.now());
+    };
+
     this.canvas.addEventListener("dragover", (e) => { e.preventDefault(); });
     this.canvas.addEventListener("drop", (e) => this.handleDrop(e));
+    window.addEventListener("paste", (e) => this.handlePaste(e));
 
     this.addDemoContent();
   }
 
-  // -- Store sync --
+  // -- EngineContext implementation --
 
-  private syncStore(): void {
+  clearSelection(): void {
+    this.selectedIds.clear();
+    this.selectedVertexMap.clear();
+  }
+
+  addToSelection(id: string): void {
+    this.selectedIds.add(id);
+  }
+
+  removeFromSelection(id: string): void {
+    this.selectedIds.delete(id);
+    this.selectedVertexMap.delete(id);
+  }
+
+  requestRender(): void {
+    this.needsRender = true;
+    // Pass a lazy getter so serialization only happens when the debounce fires
+    this.autoSave.scheduleSave(() => serializeSceneGraph(this.sceneGraph));
+  }
+
+  syncStore(): void {
     if (!this.store) return;
-    this.store.setActiveTool(this.toolMode);
+    this.store.setActiveTool(this.activeTool.id as ToolMode);
     this.store.setSelectedIds(new Set(this.selectedIds));
     this.store.setZoom(this.viewport.state.zoom);
 
     if (this.selectedIds.size > 0) {
-      const firstId = this.selectedIds.values().next().value;
-      if (firstId) {
-        const node = this.sceneGraph.findById(firstId);
-        if (node) {
-          this.store.setSelectionStyle({ ...node.style });
-          this.store.setSelectionPosition({
-            x: Math.round(node.x * 100) / 100,
-            y: Math.round(node.y * 100) / 100,
-            width: Math.round(node.width * 100) / 100,
-            height: Math.round(node.height * 100) / 100,
-            rotation: node.rotation,
-          });
-        }
-      }
-    }
-  }
-
-  setTool(tool: ToolMode): void {
-    this.toolMode = tool;
-    this.canvas.style.cursor = tool === "select" ? "default" : "crosshair";
-    this.syncStore();
-  }
-
-  updateSelectedStyle(updates: Partial<StyleProperties>): void {
-    this.lastStyleChangeTime = Date.now();
-    const snapshot = new Map<string, StyleProperties>();
-    for (const id of this.selectedIds) {
-      const node = this.sceneGraph.findById(id);
-      if (node) snapshot.set(id, { ...node.style });
-    }
-
-    for (const id of this.selectedIds) {
-      const node = this.sceneGraph.findById(id);
-      if (node) {
-        Object.assign(node.style, updates);
-        node.markVisualDirty();
-      }
-    }
-
-    const selectedIds = new Set(this.selectedIds);
-    const sceneGraph = this.sceneGraph;
-    this.undoManager.pushExecuted({
-      execute: () => {
-        for (const id of selectedIds) {
-          const node = sceneGraph.findById(id);
-          if (node) Object.assign(node.style, updates);
-        }
-      },
-      undo: () => {
-        for (const [id, style] of snapshot) {
-          const node = sceneGraph.findById(id);
-          if (node) node.style = { ...style };
-        }
-      },
-      coalesceKey: `style-${[...selectedIds].sort().join(",")}`,
-    });
-
-    this.syncStore();
-    this.requestRender();
-  }
-
-  /** Called by UI when user edits transform values (X, Y, W, H, rotation) in the properties panel */
-  updateSelectedTransform(updates: Partial<{ x: number; y: number; width: number; height: number; rotation: number }>): void {
-    this.lastStyleChangeTime = Date.now();
-
-    for (const id of this.selectedIds) {
-      const node = this.sceneGraph.findById(id);
-      if (!node) continue;
-
-      const snapshot = { x: node.x, y: node.y, width: node.width, height: node.height, rotation: node.rotation };
-
-      if (updates.x !== undefined) node.x = updates.x;
-      if (updates.y !== undefined) node.y = updates.y;
-      if (updates.width !== undefined) node.width = Math.max(1, updates.width);
-      if (updates.height !== undefined) node.height = Math.max(1, updates.height);
-      if (updates.rotation !== undefined) node.rotation = updates.rotation;
-      node.markTransformDirty();
-
-      const nodeId = id;
-      const finalState = { x: node.x, y: node.y, width: node.width, height: node.height, rotation: node.rotation };
-      const sg = this.sceneGraph;
-      this.undoManager.pushExecuted({
-        execute: () => {
-          const n = sg.findById(nodeId);
-          if (n) { n.x = finalState.x; n.y = finalState.y; n.width = finalState.width; n.height = finalState.height; n.rotation = finalState.rotation; n.markTransformDirty(); }
-        },
-        undo: () => {
-          const n = sg.findById(nodeId);
-          if (n) { n.x = snapshot.x; n.y = snapshot.y; n.width = snapshot.width; n.height = snapshot.height; n.rotation = snapshot.rotation; n.markTransformDirty(); }
-        },
-        coalesceKey: `transform-${nodeId}`,
-      });
-    }
-
-    this.syncStore();
-    this.requestRender();
-  }
-
-  // -- Demo --
-
-  private addDemoContent(): void {
-    const rect1 = new RectangleNode();
-    rect1.x = 100; rect1.y = 100; rect1.width = 200; rect1.height = 150;
-    rect1.style = { ...rect1.style, fillColor: DEFAULT_RECT_FILL, strokeColor: DEFAULT_RECT_STROKE, strokeWidth: 2, cornerRadius: 8 };
-
-    const rect2 = new RectangleNode();
-    rect2.x = 350; rect2.y = 200; rect2.width = 160; rect2.height = 120;
-    rect2.style = { ...rect2.style, fillColor: "#d94a4a", strokeColor: "#8a2c2c", strokeWidth: 2, cornerRadius: 4 };
-
-    const text1 = new TextNode();
-    text1.x = 120; text1.y = 300; text1.content = "Double-click to edit";
-    text1.style = { ...text1.style, fillColor: DEFAULT_TEXT_FILL, strokeWidth: 0 };
-
-    this.sceneGraph.addElement(rect1);
-    this.sceneGraph.addElement(rect2);
-    this.sceneGraph.addElement(text1);
-  }
-
-  // -- Lifecycle --
-
-  start(): void {
-    this.renderer.resize();
-    this.renderLoop();
-  }
-
-  stop(): void {
-    if (this.animationFrameId !== null) {
-      cancelAnimationFrame(this.animationFrameId);
-    }
-    window.removeEventListener("keydown", this.handleKeyDown);
-    window.removeEventListener("keyup", this.handleKeyUp);
-    window.removeEventListener("resize", this.handleResize);
-    this.removeTextOverlay();
-  }
-
-  private renderLoop = (): void => {
-    if (this.needsRender) {
-      const marquee = this.marqueeStart && this.marqueeEnd
-        ? { start: this.marqueeStart, end: this.marqueeEnd } : null;
-      this.renderer.render(this.sceneGraph, this.viewport, this.selectedIds, marquee);
-      this.needsRender = false;
-    }
-    this.animationFrameId = requestAnimationFrame(this.renderLoop);
-  };
-
-  private requestRender(): void {
-    this.needsRender = true;
-  }
-
-  // -- Pointer events --
-
-  handlePointerDown(event: PointerEvent): void {
-    const screenX = event.offsetX;
-    const screenY = event.offsetY;
-    const world = this.viewport.screenToWorld(screenX, screenY);
-
-    // Middle mouse or space+left = pan
-    if (event.button === 1 || (event.button === 0 && this.spaceHeld)) {
-      this.dragState = { type: "pan", startWorld: world, startScreen: { x: screenX, y: screenY } };
-      this.canvas.style.cursor = "grabbing";
-      return;
-    }
-
-    if (event.button !== 0) return;
-
-    // Check for resize/rotate handle hit (only in select mode with a single selection)
-    if (this.toolMode === "select" && this.selectedIds.size === 1) {
-      const nodeId = this.selectedIds.values().next().value!;
-      const node = this.sceneGraph.findById(nodeId);
-      if (node) {
-        const bounds = node.getWorldBounds();
-        const screenBounds = this.worldBoundsToScreen(bounds);
-
-        // Check resize handles first
-        const handle = hitTestHandles({ x: screenX, y: screenY }, screenBounds);
-        if (handle) {
-          this.dragState = {
-            type: "resize",
-            startWorld: world,
-            startScreen: { x: screenX, y: screenY },
-            resizeHandle: handle.position,
-            resizeNodeId: nodeId,
-            originalDimensions: new Map([[nodeId, { x: node.x, y: node.y, width: node.width, height: node.height }]]),
-          };
-          this.canvas.style.cursor = handle.cursor;
-          return;
-        }
-
-        // Check rotation zone (just outside corner handles)
-        if (hitTestRotation({ x: screenX, y: screenY }, screenBounds)) {
-          const centerX = node.x + node.width / 2;
-          const centerY = node.y + node.height / 2;
-          const startAngle = Math.atan2(world.y - centerY, world.x - centerX);
-          this.dragState = {
-            type: "rotate",
-            startWorld: world,
-            startScreen: { x: screenX, y: screenY },
-            rotateNodeId: nodeId,
-            originalRotation: node.rotation,
-            startAngle,
-          };
-          this.canvas.style.cursor = ROTATE_CURSOR;
-          return;
-        }
-
-        // Check arrow endpoint hit
-        if (node instanceof ArrowNode) {
-          const hitRadius = 8 / this.viewport.state.zoom;
-          const startDist = Math.sqrt((world.x - node.x) ** 2 + (world.y - node.y) ** 2);
-          const endWorldX = node.x + node.endX;
-          const endWorldY = node.y + node.endY;
-          const endDist = Math.sqrt((world.x - endWorldX) ** 2 + (world.y - endWorldY) ** 2);
-
-          if (startDist < hitRadius || endDist < hitRadius) {
-            const endpoint = startDist < endDist ? "start" : "end";
-            this.dragState = {
-              type: "arrow-endpoint",
-              startWorld: world,
-              startScreen: { x: screenX, y: screenY },
-              arrowEndpoint: endpoint,
-              arrowNodeId: nodeId,
-              originalArrowStart: { x: node.x, y: node.y },
-              originalArrowEnd: { x: node.endX, y: node.endY },
-            };
-            this.canvas.style.cursor = "move";
-            return;
-          }
-        }
-      }
-    }
-
-    switch (this.toolMode) {
-      case "rectangle":
-        this.startCreateRectangle(world, screenX, screenY);
-        break;
-      case "text":
-        this.startCreateText(world);
-        break;
-      case "arrow":
-        this.startCreateArrow(world, screenX, screenY);
-        break;
-      default:
-        this.handleSelectClick(world, event.shiftKey, screenX, screenY);
-        break;
-    }
-  }
-
-  handlePointerMove(event: PointerEvent): void {
-    const screenX = event.offsetX;
-    const screenY = event.offsetY;
-    const world = this.viewport.screenToWorld(screenX, screenY);
-
-    if (this.dragState.type === "pan") {
-      const dx = screenX - this.dragState.startScreen.x;
-      const dy = screenY - this.dragState.startScreen.y;
-      this.viewport.state.offsetX += dx;
-      this.viewport.state.offsetY += dy;
-      this.dragState.startScreen = { x: screenX, y: screenY };
-      this.requestRender();
-      return;
-    }
-
-    if (this.dragState.type === "resize" && this.dragState.resizeNodeId && this.dragState.originalDimensions) {
-      const node = this.sceneGraph.findById(this.dragState.resizeNodeId);
-      const original = this.dragState.originalDimensions.get(this.dragState.resizeNodeId);
-      if (node && original) {
-        const deltaX = world.x - this.dragState.startWorld.x;
-        const deltaY = world.y - this.dragState.startWorld.y;
-        const result = applyResize(this.dragState.resizeHandle!, original.x, original.y, original.width, original.height, deltaX, deltaY);
-        node.x = result.x; node.y = result.y;
-        node.width = result.width; node.height = result.height;
-        node.markTransformDirty();
-        this.syncStore();
-        this.requestRender();
-      }
-      return;
-    }
-
-    if (this.dragState.type === "arrow-endpoint" && this.dragState.arrowNodeId) {
-      const arrow = this.sceneGraph.findById(this.dragState.arrowNodeId) as ArrowNode | null;
-      if (arrow) {
-        if (this.dragState.arrowEndpoint === "start") {
-          // Moving start: shift position, adjust endX/endY to keep end point fixed
-          const origStart = this.dragState.originalArrowStart!;
-          const origEnd = this.dragState.originalArrowEnd!;
-          arrow.x = world.x;
-          arrow.y = world.y;
-          arrow.endX = origStart.x + origEnd.x - world.x;
-          arrow.endY = origStart.y + origEnd.y - world.y;
-        } else {
-          // Moving end: just update endX/endY relative to arrow origin
-          arrow.endX = world.x - arrow.x;
-          arrow.endY = world.y - arrow.y;
-        }
-        arrow.markTransformDirty();
-        this.syncStore();
-        this.requestRender();
-      }
-      return;
-    }
-
-    if (this.dragState.type === "rotate" && this.dragState.rotateNodeId) {
-      const node = this.sceneGraph.findById(this.dragState.rotateNodeId);
-      if (node) {
-        const centerX = node.x + node.width / 2;
-        const centerY = node.y + node.height / 2;
-        const currentAngle = Math.atan2(world.y - centerY, world.x - centerX);
-        const deltaAngle = currentAngle - this.dragState.startAngle!;
-        node.rotation = this.dragState.originalRotation! + deltaAngle;
-        node.markTransformDirty();
-        this.syncStore();
-        this.requestRender();
-      }
-      return;
-    }
-
-    if (this.dragState.type === "move" && this.dragState.originalPositions) {
-      const deltaX = world.x - this.dragState.startWorld.x;
-      const deltaY = world.y - this.dragState.startWorld.y;
+      const nodes: BaseNode[] = [];
       for (const id of this.selectedIds) {
         const node = this.sceneGraph.findById(id);
-        const orig = this.dragState.originalPositions.get(id);
-        if (node && orig) {
-          node.x = orig.x + deltaX;
-          node.y = orig.y + deltaY;
-          node.markTransformDirty();
-        }
+        if (node) nodes.push(node);
       }
-      this.syncStore();
-      this.requestRender();
-      return;
-    }
 
-    if (this.dragState.type === "create" && this.dragState.creatingNode) {
-      const node = this.dragState.creatingNode;
-      node.x = Math.min(this.dragState.startWorld.x, world.x);
-      node.y = Math.min(this.dragState.startWorld.y, world.y);
-      node.width = Math.abs(world.x - this.dragState.startWorld.x);
-      node.height = Math.abs(world.y - this.dragState.startWorld.y);
-      node.markTransformDirty();
-      this.requestRender();
-      return;
-    }
+      this.store.setSelectionType(nodes.length === 1 ? nodes[0].type : null);
 
-    if (this.dragState.type === "arrow" && this.dragState.creatingNode) {
-      const arrow = this.dragState.creatingNode as ArrowNode;
-      arrow.endX = world.x - this.dragState.startWorld.x;
-      arrow.endY = world.y - this.dragState.startWorld.y;
-      arrow.markTransformDirty();
-      this.requestRender();
-      return;
-    }
+      if (nodes.length === 1) {
+        const n = nodes[0];
+        this.store.setSelectionStyle({
+          fillColor: n.style.fillColor, fillOpacity: n.style.fillOpacity, fillVisible: n.style.fillVisible,
+          strokeColor: n.style.strokeColor, strokeWidth: n.style.strokeWidth, strokeOpacity: n.style.strokeOpacity, strokeVisible: n.style.strokeVisible,
+          cornerRadius: n.style.cornerRadius, opacity: n.style.opacity,
+        });
+        this.store.setSelectionPosition({
+          x: Math.round(n.x * 100) / 100,
+          y: Math.round(n.y * 100) / 100,
+          width: Math.round(n.width * 100) / 100,
+          height: Math.round(n.height * 100) / 100,
+          rotation: n.rotation,
+        });
+      } else if (nodes.length > 1) {
+        // Compute mixed values: show value if all match, "mixed" if they differ
+        const r = (v: number) => Math.round(v * 100) / 100;
+        const mixedNum = (getter: (n: BaseNode) => number) => {
+          const first = r(getter(nodes[0]));
+          return nodes.every((n) => r(getter(n)) === first) ? first : "mixed" as const;
+        };
+        const mixedStr = (getter: (n: BaseNode) => string) => {
+          const first = getter(nodes[0]);
+          return nodes.every((n) => getter(n) === first) ? first : "mixed" as const;
+        };
 
-    if (this.dragState.type === "marquee") {
-      this.marqueeEnd = world;
-      this.selectedIds.clear();
-      const minX = Math.min(this.marqueeStart!.x, world.x);
-      const minY = Math.min(this.marqueeStart!.y, world.y);
-      const maxX = Math.max(this.marqueeStart!.x, world.x);
-      const maxY = Math.max(this.marqueeStart!.y, world.y);
-      for (const el of this.sceneGraph.getElements()) {
-        const b = el.getWorldBounds();
-        if (b.x + b.width >= minX && b.x <= maxX && b.y + b.height >= minY && b.y <= maxY) {
-          this.selectedIds.add(el.id);
-        }
-      }
-      this.syncStore();
-      this.requestRender();
-      return;
-    }
-
-    this.updateCursor(world, screenX, screenY);
-  }
-
-  handlePointerUp(_event: PointerEvent): void {
-    if (this.dragState.type === "pan") {
-      this.canvas.style.cursor = this.spaceHeld ? "grab" : "default";
-    }
-
-    if (this.dragState.type === "marquee") {
-      this.marqueeStart = null;
-      this.marqueeEnd = null;
-      this.syncStore();
-      this.requestRender();
-    }
-
-    // Push undo for move
-    if (this.dragState.type === "move" && this.dragState.originalPositions) {
-      const originals = new Map(this.dragState.originalPositions);
-      const finals = new Map<string, Point>();
-      for (const id of this.selectedIds) {
-        const node = this.sceneGraph.findById(id);
-        if (node) finals.set(id, { x: node.x, y: node.y });
-      }
-      const sg = this.sceneGraph;
-      this.undoManager.pushExecuted({
-        execute: () => { for (const [id, p] of finals) { const n = sg.findById(id); if (n) { n.x = p.x; n.y = p.y; n.markTransformDirty(); } } },
-        undo: () => { for (const [id, p] of originals) { const n = sg.findById(id); if (n) { n.x = p.x; n.y = p.y; n.markTransformDirty(); } } },
-      });
-      this.syncStore();
-    }
-
-    // Push undo for arrow endpoint drag
-    if (this.dragState.type === "arrow-endpoint" && this.dragState.arrowNodeId) {
-      const nodeId = this.dragState.arrowNodeId;
-      const origStart = this.dragState.originalArrowStart!;
-      const origEnd = this.dragState.originalArrowEnd!;
-      const arrow = this.sceneGraph.findById(nodeId) as ArrowNode | null;
-      if (arrow) {
-        const finalState = { x: arrow.x, y: arrow.y, endX: arrow.endX, endY: arrow.endY };
-        const sg = this.sceneGraph;
-        this.undoManager.pushExecuted({
-          execute: () => { const a = sg.findById(nodeId) as ArrowNode | null; if (a) { a.x = finalState.x; a.y = finalState.y; a.endX = finalState.endX; a.endY = finalState.endY; a.markTransformDirty(); } },
-          undo: () => { const a = sg.findById(nodeId) as ArrowNode | null; if (a) { a.x = origStart.x; a.y = origStart.y; a.endX = origEnd.x; a.endY = origEnd.y; a.markTransformDirty(); } },
+        this.store.setSelectionPosition({
+          x: mixedNum((n) => n.x),
+          y: mixedNum((n) => n.y),
+          width: mixedNum((n) => n.width),
+          height: mixedNum((n) => n.height),
+          rotation: mixedNum((n) => n.rotation),
+        });
+        const mixedBool = (getter: (n: BaseNode) => boolean) => {
+          const first = getter(nodes[0]);
+          return nodes.every((n) => getter(n) === first) ? first : "mixed" as const;
+        };
+        this.store.setSelectionStyle({
+          fillColor: mixedStr((n) => n.style.fillColor),
+          fillOpacity: mixedNum((n) => n.style.fillOpacity),
+          fillVisible: mixedBool((n) => n.style.fillVisible),
+          strokeColor: mixedStr((n) => n.style.strokeColor),
+          strokeWidth: mixedNum((n) => n.style.strokeWidth),
+          strokeOpacity: mixedNum((n) => n.style.strokeOpacity),
+          strokeVisible: mixedBool((n) => n.style.strokeVisible),
+          cornerRadius: mixedNum((n) => n.style.cornerRadius),
+          opacity: mixedNum((n) => n.style.opacity),
         });
       }
-      this.syncStore();
     }
 
-    // Push undo for rotation
-    if (this.dragState.type === "rotate" && this.dragState.rotateNodeId) {
-      const nodeId = this.dragState.rotateNodeId;
-      const originalRotation = this.dragState.originalRotation!;
-      const node = this.sceneGraph.findById(nodeId);
-      if (node) {
-        const finalRotation = node.rotation;
-        const sg = this.sceneGraph;
-        this.undoManager.pushExecuted({
-          execute: () => { const n = sg.findById(nodeId); if (n) { n.rotation = finalRotation; n.markTransformDirty(); } },
-          undo: () => { const n = sg.findById(nodeId); if (n) { n.rotation = originalRotation; n.markTransformDirty(); } },
-        });
-      }
-      this.syncStore();
-    }
-
-    // Push undo for resize
-    if (this.dragState.type === "resize" && this.dragState.originalDimensions && this.dragState.resizeNodeId) {
-      const nodeId = this.dragState.resizeNodeId;
-      const original = this.dragState.originalDimensions.get(nodeId)!;
-      const node = this.sceneGraph.findById(nodeId);
-      if (node) {
-        const finalState = { x: node.x, y: node.y, width: node.width, height: node.height };
-        const sg = this.sceneGraph;
-        this.undoManager.pushExecuted({
-          execute: () => { const n = sg.findById(nodeId); if (n) { n.x = finalState.x; n.y = finalState.y; n.width = finalState.width; n.height = finalState.height; n.markTransformDirty(); } },
-          undo: () => { const n = sg.findById(nodeId); if (n) { n.x = original.x; n.y = original.y; n.width = original.width; n.height = original.height; n.markTransformDirty(); } },
-        });
-      }
-      this.syncStore();
-    }
-
-    // Finish create
-    if (this.dragState.type === "create" && this.dragState.creatingNode) {
-      const node = this.dragState.creatingNode;
-      if (node.width < 5 && node.height < 5) {
-        this.sceneGraph.removeElement(node);
-        this.selectedIds.delete(node.id);
-      } else {
-        this.selectedIds.clear();
-        this.selectedIds.add(node.id);
-        const sg = this.sceneGraph;
-        const nodeRef = node;
-        this.undoManager.pushExecuted({
-          execute: () => { if (!sg.findById(nodeRef.id)) sg.addElement(nodeRef); },
-          undo: () => { sg.removeElement(nodeRef); },
-        });
-      }
-      this.setTool("select");
-      this.syncStore();
-      this.requestRender();
-    }
-
-    // Finish arrow create
-    if (this.dragState.type === "arrow" && this.dragState.creatingNode) {
-      const arrow = this.dragState.creatingNode as ArrowNode;
-      const length = Math.sqrt(arrow.endX * arrow.endX + arrow.endY * arrow.endY);
-      if (length < 5) {
-        this.sceneGraph.removeElement(arrow);
-      } else {
-        this.selectedIds.clear();
-        this.selectedIds.add(arrow.id);
-        const sg = this.sceneGraph;
-        this.undoManager.pushExecuted({
-          execute: () => { if (!sg.findById(arrow.id)) sg.addElement(arrow); },
-          undo: () => { sg.removeElement(arrow); },
-        });
-      }
-      this.setTool("select");
-      this.syncStore();
-      this.requestRender();
-    }
-
-    this.dragState = { type: "none", startWorld: { x: 0, y: 0 }, startScreen: { x: 0, y: 0 } };
-  }
-
-  handleWheel(event: WheelEvent): void {
-    event.preventDefault();
-    if (event.ctrlKey || event.metaKey) {
-      this.viewport.zoomAtPoint(event.offsetX, event.offsetY, event.deltaY);
-    } else {
-      this.viewport.pan(-event.deltaX, -event.deltaY);
-    }
-    this.syncStore();
-    this.requestRender();
-  }
-
-  handleDoubleClick(event: MouseEvent): void {
-    const world = this.viewport.screenToWorld(event.offsetX, event.offsetY);
-
-    // Check if double-clicking a text node to edit
     const elements = this.sceneGraph.getElements();
+    const layerInfos = [];
     for (let i = elements.length - 1; i >= 0; i--) {
       const el = elements[i];
-      if (el instanceof TextNode && el.hitTest(world.x, world.y)) {
-        this.startTextEditing(el);
-        return;
-      }
-    }
-  }
-
-  // -- Keyboard --
-
-  private handleKeyDown(event: KeyboardEvent): void {
-    // Don't capture keys while focus is in an input, textarea, or contenteditable
-    const active = document.activeElement;
-    if (
-      this.editingTextNodeId ||
-      active instanceof HTMLInputElement ||
-      active instanceof HTMLTextAreaElement ||
-      (active instanceof HTMLElement && active.isContentEditable)
-    ) return;
-
-    if (event.code === "Space" && !event.repeat) {
-      this.spaceHeld = true;
-      this.canvas.style.cursor = "grab";
-      event.preventDefault();
-    }
-
-    if (event.code === "KeyR" && !event.repeat && !event.ctrlKey && !event.metaKey) this.setTool("rectangle");
-    if (event.code === "KeyV" && !event.repeat && !event.ctrlKey && !event.metaKey) this.setTool("select");
-    if (event.code === "KeyT" && !event.repeat && !event.ctrlKey && !event.metaKey) this.setTool("text");
-    if (event.code === "KeyA" && !event.repeat && !event.ctrlKey && !event.metaKey) this.setTool("arrow");
-
-    if (event.code === "Escape") {
-      this.selectedIds.clear();
-      this.setTool("select");
-      this.requestRender();
-    }
-
-    // Undo/redo
-    if ((event.ctrlKey || event.metaKey) && event.code === "KeyZ" && !event.shiftKey) {
-      event.preventDefault();
-      if (this.undoManager.undo()) { this.syncStore(); this.requestRender(); }
-    }
-    if ((event.ctrlKey || event.metaKey) && event.code === "KeyZ" && event.shiftKey) {
-      event.preventDefault();
-      if (this.undoManager.redo()) { this.syncStore(); this.requestRender(); }
-    }
-
-    // Delete
-    if ((event.code === "Backspace" || event.code === "Delete") && this.selectedIds.size > 0) {
-      const removedNodes: BaseNode[] = [];
-      for (const id of this.selectedIds) {
-        const node = this.sceneGraph.findById(id);
-        if (node) {
-          removedNodes.push(node);
-          this.sceneGraph.removeElement(node);
-        }
-      }
-      const sg = this.sceneGraph;
-      this.undoManager.pushExecuted({
-        execute: () => { for (const n of removedNodes) sg.removeElement(n); },
-        undo: () => { for (const n of removedNodes) sg.addElement(n); },
+      layerInfos.push({
+        id: el.id,
+        name: el.name || `${el.type} ${el.id.replace("node_", "")}`,
+        type: el.type,
+        visible: el.visible,
+        locked: el.locked,
       });
-      this.selectedIds.clear();
-      this.syncStore();
-      this.requestRender();
     }
+    this.store.setLayers(layerInfos);
+
+    const metadata = generateMetadata(elements);
+    this.store.setMetadataText(metadata.textSummary);
+    this.store.setMetadataAscii(metadata.asciiArt);
+    this.store.setMetadataJson(JSON.stringify(metadata.structuredJson, null, 2));
   }
 
-  private handleKeyUp(event: KeyboardEvent): void {
-    if (event.code === "Space") {
-      this.spaceHeld = false;
-      if (this.dragState.type !== "pan") {
-        this.canvas.style.cursor = this.toolMode === "select" ? "default" : "crosshair";
-      }
-    }
+  setMarquee(start: Point | null, end: Point | null): void {
+    this.marqueeStart = start;
+    this.marqueeEnd = end;
   }
 
-  private handleResize(): void {
-    this.renderer.resize();
-    this.requestRender();
-  }
-
-  // -- Select tool --
-
-  private handleSelectClick(world: Point, shiftKey: boolean, screenX: number, screenY: number): void {
-    const elements = this.sceneGraph.getElements();
-    let hitNode: BaseNode | null = null;
-
-    for (let i = elements.length - 1; i >= 0; i--) {
-      if (elements[i].hitTest(world.x, world.y)) {
-        hitNode = elements[i];
-        break;
-      }
-    }
-
-    if (hitNode) {
-      if (shiftKey) {
-        if (this.selectedIds.has(hitNode.id)) this.selectedIds.delete(hitNode.id);
-        else this.selectedIds.add(hitNode.id);
-      } else {
-        if (!this.selectedIds.has(hitNode.id)) {
-          this.selectedIds.clear();
-          this.selectedIds.add(hitNode.id);
-        }
-      }
-
-      const originalPositions = new Map<string, Point>();
-      for (const id of this.selectedIds) {
-        const node = this.sceneGraph.findById(id);
-        if (node) originalPositions.set(id, { x: node.x, y: node.y });
-      }
-
-      this.dragState = { type: "move", startWorld: world, startScreen: { x: screenX, y: screenY }, originalPositions };
-    } else {
-      // Don't deselect if a style change just happened (e.g. closing color picker)
-      if (Date.now() - this.lastStyleChangeTime > 200) {
-        this.selectedIds.clear();
-      }
-      this.marqueeStart = world;
-      this.marqueeEnd = world;
-      this.dragState = { type: "marquee", startWorld: world, startScreen: { x: screenX, y: screenY } };
-    }
-
-    this.syncStore();
-    this.requestRender();
-  }
-
-  // -- Create tools --
-
-  private startCreateRectangle(world: Point, screenX: number, screenY: number): void {
-    const node = new RectangleNode();
-    node.x = world.x; node.y = world.y;
-    node.style = { ...node.style, fillColor: DEFAULT_RECT_FILL, strokeColor: DEFAULT_RECT_STROKE, strokeWidth: 2, cornerRadius: 4 };
-    this.sceneGraph.addElement(node);
-    this.dragState = { type: "create", startWorld: world, startScreen: { x: screenX, y: screenY }, creatingNode: node };
-    this.requestRender();
-  }
-
-  private startCreateText(world: Point): void {
-    const node = new TextNode();
-    node.x = world.x; node.y = world.y;
-    node.content = "";
-    node.style = { ...node.style, fillColor: DEFAULT_TEXT_FILL, strokeWidth: 0 };
-    this.sceneGraph.addElement(node);
-    this.selectedIds.clear();
-    this.selectedIds.add(node.id);
-
-    const sg = this.sceneGraph;
-    this.undoManager.pushExecuted({
-      execute: () => { if (!sg.findById(node.id)) sg.addElement(node); },
-      undo: () => { sg.removeElement(node); },
-    });
-
-    this.setTool("select");
-    this.syncStore();
-    this.requestRender();
-
-    // Immediately start editing the text
-    requestAnimationFrame(() => this.startTextEditing(node));
-  }
-
-  private startCreateArrow(world: Point, screenX: number, screenY: number): void {
-    const node = new ArrowNode();
-    node.x = world.x; node.y = world.y;
-    node.endX = 0; node.endY = 0;
-    node.style = { ...node.style, fillColor: "transparent", fillOpacity: 0, strokeColor: DEFAULT_ARROW_STROKE, strokeWidth: 2 };
-    this.sceneGraph.addElement(node);
-    this.dragState = { type: "arrow", startWorld: world, startScreen: { x: screenX, y: screenY }, creatingNode: node };
-    this.requestRender();
-  }
-
-  // -- Text editing overlay --
-
-  private startTextEditing(node: TextNode): void {
-    this.editingTextNodeId = node.id;
+  startTextEditing(nodeId: string): void {
+    const node = this.sceneGraph.findById(nodeId);
+    if (!(node instanceof TextNode)) return;
+    this.editingTextNodeId = nodeId;
     const previousContent = node.content;
 
-    // Create DOM overlay positioned over the text node
     const overlay = document.createElement("div");
     overlay.contentEditable = "true";
     overlay.innerText = node.content;
@@ -802,14 +223,18 @@ export class CanvasEngine {
     overlay.style.whiteSpace = "pre-wrap";
     overlay.style.zIndex = "1000";
 
-    this.updateTextOverlayPosition(overlay, node);
+    const wt = node.getWorldTransform();
+    const screen = this.viewport.worldToScreen(wt[4], wt[5]);
+    const canvasRect = this.canvas.getBoundingClientRect();
+    overlay.style.left = `${canvasRect.left + screen.x}px`;
+    overlay.style.top = `${canvasRect.top + screen.y}px`;
+    overlay.style.fontSize = `${node.fontSize * this.viewport.state.zoom}px`;
 
     overlay.addEventListener("blur", () => {
       node.content = overlay.innerText || "Text";
       node.markVisualDirty();
       this.removeTextOverlay();
       this.editingTextNodeId = null;
-
       if (node.content !== previousContent) {
         const finalContent = node.content;
         this.undoManager.pushExecuted({
@@ -817,19 +242,17 @@ export class CanvasEngine {
           undo: () => { node.content = previousContent; node.markVisualDirty(); },
         });
       }
-
       this.requestRender();
     });
 
     overlay.addEventListener("keydown", (e) => {
       if (e.key === "Escape") overlay.blur();
-      e.stopPropagation(); // Don't let engine handle these keys
+      e.stopPropagation();
     });
 
     this.canvas.parentElement!.appendChild(overlay);
     this.textOverlay = overlay;
 
-    // Focus and select all text
     requestAnimationFrame(() => {
       overlay.focus();
       const selection = window.getSelection();
@@ -842,28 +265,501 @@ export class CanvasEngine {
     });
   }
 
-  private updateTextOverlayPosition(overlay: HTMLDivElement, node: TextNode): void {
-    const screen = this.viewport.worldToScreen(node.x, node.y);
-    const canvasRect = this.canvas.getBoundingClientRect();
-    overlay.style.left = `${canvasRect.left + screen.x}px`;
-    overlay.style.top = `${canvasRect.top + screen.y}px`;
-    overlay.style.fontSize = `${node.fontSize * this.viewport.state.zoom}px`;
-  }
-
   private removeTextOverlay(): void {
-    if (this.textOverlay && this.textOverlay.parentElement) {
+    if (this.textOverlay?.parentElement) {
       this.textOverlay.parentElement.removeChild(this.textOverlay);
     }
     this.textOverlay = null;
   }
 
+  // -- Public API (called by UI) --
+
+  setTool(tool: ToolMode): void {
+    this.activeTool.onDeactivate?.(this);
+    this.activeTool = this.tools.get(tool) ?? this.tools.get("select")!;
+    this.activeTool.onActivate?.(this);
+    this.selectedVertexMap.clear();
+    this.syncStore();
+  }
+
+  /** Select a layer from the layers panel.
+   *  - "replace": clear selection, select this one
+   *  - "toggle": add/remove this one (Ctrl+click)
+   *  - "range": select from last clicked to this one inclusive (Shift+click) */
+  private lastLayerClickId: string | null = null;
+
+  selectElement(id: string, mode: "replace" | "toggle" | "range"): void {
+    if (mode === "replace") {
+      this.clearSelection();
+      this.selectedIds.add(id);
+      this.lastLayerClickId = id;
+    } else if (mode === "toggle") {
+      if (this.selectedIds.has(id)) this.selectedIds.delete(id);
+      else this.selectedIds.add(id);
+      this.lastLayerClickId = id;
+    } else if (mode === "range" && this.lastLayerClickId) {
+      // Find indices of last click and current click in the layer list
+      const elements = this.sceneGraph.getElements();
+      // Layers are displayed reversed (top = last element), so build the display order
+      const layerOrder: string[] = [];
+      for (let i = elements.length - 1; i >= 0; i--) {
+        layerOrder.push(elements[i].id);
+      }
+      const fromIndex = layerOrder.indexOf(this.lastLayerClickId);
+      const toIndex = layerOrder.indexOf(id);
+      if (fromIndex !== -1 && toIndex !== -1) {
+        const start = Math.min(fromIndex, toIndex);
+        const end = Math.max(fromIndex, toIndex);
+        for (let i = start; i <= end; i++) {
+          this.selectedIds.add(layerOrder[i]);
+        }
+      }
+    }
+    this.syncStore();
+    this.requestRender();
+  }
+
+  toggleAutoSave(): boolean {
+    const newState = !this.autoSave.isEnabled();
+    this.autoSave.setEnabled(newState);
+    return newState;
+  }
+
+  isAutoSaveEnabled(): boolean {
+    return this.autoSave.isEnabled();
+  }
+
+  toggleVisibility(id: string): void {
+    const node = this.sceneGraph.findById(id);
+    if (node) {
+      node.visible = !node.visible;
+      node.markVisualDirty();
+      this.syncStore();
+      this.requestRender();
+    }
+  }
+
+  updateSelectedStyle(updates: Partial<StyleProperties>): void {
+    this.lastStyleChangeTime = Date.now();
+    const snapshot = new Map<string, StyleProperties>();
+    for (const id of this.selectedIds) {
+      const node = this.sceneGraph.findById(id);
+      if (node) snapshot.set(id, { ...node.style });
+    }
+    for (const id of this.selectedIds) {
+      const node = this.sceneGraph.findById(id);
+      if (node) { Object.assign(node.style, updates); node.markVisualDirty(); }
+    }
+    const selectedIds = new Set(this.selectedIds);
+    const sg = this.sceneGraph;
+    this.undoManager.pushExecuted({
+      execute: () => { for (const id of selectedIds) { const n = sg.findById(id); if (n) Object.assign(n.style, updates); } },
+      undo: () => { for (const [id, style] of snapshot) { const n = sg.findById(id); if (n) n.style = { ...style }; } },
+      coalesceKey: `style-${[...selectedIds].sort().join(",")}`,
+    });
+    this.syncStore();
+    this.requestRender();
+  }
+
+  /** Apply a relative delta to a transform property across all selected elements individually */
+  relativeTransformChange(field: string, delta: number): void {
+    this.lastStyleChangeTime = Date.now();
+    for (const id of this.selectedIds) {
+      const node = this.sceneGraph.findById(id);
+      if (!node) continue;
+      const snapshot = { x: node.x, y: node.y, width: node.width, height: node.height, rotation: node.rotation };
+      const nodeAny = node as unknown as Record<string, number>;
+      nodeAny[field] = nodeAny[field] + delta;
+      if (field === "width" || field === "height") {
+        nodeAny[field] = Math.max(1, nodeAny[field]);
+      }
+      node.markTransformDirty();
+      const nodeId = id;
+      const finalState = { x: node.x, y: node.y, width: node.width, height: node.height, rotation: node.rotation };
+      const sg = this.sceneGraph;
+      this.undoManager.pushExecuted({
+        execute: () => { const n = sg.findById(nodeId); if (n) { Object.assign(n, finalState); n.markTransformDirty(); } },
+        undo: () => { const n = sg.findById(nodeId); if (n) { Object.assign(n, snapshot); n.markTransformDirty(); } },
+        coalesceKey: `rel-transform-${field}`,
+      });
+    }
+    this.syncStore();
+    this.requestRender();
+  }
+
+  /** Apply a relative delta to a style property across all selected elements individually */
+  relativeStyleChange(field: string, delta: number): void {
+    this.lastStyleChangeTime = Date.now();
+    for (const id of this.selectedIds) {
+      const node = this.sceneGraph.findById(id);
+      if (!node) continue;
+      const styleAny = node.style as unknown as Record<string, number>;
+      const oldValue = styleAny[field];
+      let newValue = oldValue + delta;
+      if (field === "opacity") newValue = Math.max(0, Math.min(1, newValue));
+      if (field === "strokeWidth") newValue = Math.max(0, newValue);
+      if (field === "cornerRadius") newValue = Math.max(0, newValue);
+      styleAny[field] = newValue;
+      node.markVisualDirty();
+    }
+    this.syncStore();
+    this.requestRender();
+  }
+
+  updateSelectedTransform(updates: Partial<{ x: number; y: number; width: number; height: number; rotation: number }>): void {
+    this.lastStyleChangeTime = Date.now();
+    for (const id of this.selectedIds) {
+      const node = this.sceneGraph.findById(id);
+      if (!node) continue;
+      const snapshot = { x: node.x, y: node.y, width: node.width, height: node.height, rotation: node.rotation };
+      if (updates.x !== undefined) node.x = updates.x;
+      if (updates.y !== undefined) node.y = updates.y;
+      if (updates.width !== undefined) node.width = Math.max(1, updates.width);
+      if (updates.height !== undefined) node.height = Math.max(1, updates.height);
+      if (updates.rotation !== undefined) node.rotation = updates.rotation;
+      node.markTransformDirty();
+      const nodeId = id;
+      const finalState = { x: node.x, y: node.y, width: node.width, height: node.height, rotation: node.rotation };
+      const sg = this.sceneGraph;
+      this.undoManager.pushExecuted({
+        execute: () => { const n = sg.findById(nodeId); if (n) { Object.assign(n, finalState); n.markTransformDirty(); } },
+        undo: () => { const n = sg.findById(nodeId); if (n) { Object.assign(n, snapshot); n.markTransformDirty(); } },
+        coalesceKey: `transform-${nodeId}`,
+      });
+    }
+    this.syncStore();
+    this.requestRender();
+  }
+
+  // -- File operations --
+
+  saveProject(): void {
+    const data = serializeSceneGraph(this.sceneGraph);
+    const json = JSON.stringify(data, null, 2);
+    const blob = new Blob([json], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "untitled.sf";
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  async loadProject(): Promise<void> {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = ".sf,application/json";
+    input.onchange = async () => {
+      const file = input.files?.[0];
+      if (!file) return;
+      const text = await file.text();
+      const nodes = deserializeProject(JSON.parse(text));
+      const page = this.sceneGraph.getActivePage();
+      for (const child of [...page.children]) page.removeChild(child);
+      for (const node of nodes) this.sceneGraph.addElement(node);
+      this.clearSelection();
+      this.syncStore();
+      this.requestRender();
+    };
+    input.click();
+  }
+
+  exportSvgFile(): void {
+    // Lazy import to keep main bundle small
+    import("./SvgExporter").then(({ exportSvgString }) => {
+      const svg = exportSvgString(this.sceneGraph);
+      const blob = new Blob([svg], { type: "image/svg+xml" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "figure.svg";
+      a.click();
+      URL.revokeObjectURL(url);
+    });
+  }
+
+  async exportPdfFile(): Promise<void> {
+    const { exportPdf } = await import("./PdfExporter");
+    const blob = await exportPdf(this.sceneGraph);
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "figure.pdf";
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  exportPngFile(): void {
+    const elements = this.sceneGraph.getElements().filter((el) => el.visible);
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const el of elements) {
+      const b = el.getWorldBounds();
+      minX = Math.min(minX, b.x); minY = Math.min(minY, b.y);
+      maxX = Math.max(maxX, b.x + b.width); maxY = Math.max(maxY, b.y + b.height);
+    }
+    if (!isFinite(minX)) return;
+    const padding = 10;
+    const dpr = 2;
+    const w = (maxX - minX + padding * 2) * dpr;
+    const h = (maxY - minY + padding * 2) * dpr;
+    const offscreen = document.createElement("canvas");
+    offscreen.width = w; offscreen.height = h;
+    const ctx = offscreen.getContext("2d")!;
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, w, h);
+    ctx.setTransform(dpr, 0, 0, dpr, (-minX + padding) * dpr, (-minY + padding) * dpr);
+    for (const el of elements) el.render(ctx);
+    offscreen.toBlob((blob) => {
+      if (!blob) return;
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url; a.download = "figure.png"; a.click();
+      URL.revokeObjectURL(url);
+    }, "image/png");
+  }
+
+  // -- Lifecycle --
+
+  async start(): Promise<void> {
+    this.renderer.resize();
+    await this.autoSave.initialize();
+    const saved = await this.autoSave.load();
+    if (saved) {
+      try {
+        const nodes = deserializeProject(saved as ReturnType<typeof serializeSceneGraph>);
+        if (nodes.length > 0) {
+          const page = this.sceneGraph.getActivePage();
+          for (const child of [...page.children]) page.removeChild(child);
+          for (const node of nodes) this.sceneGraph.addElement(node);
+          this.syncStore();
+        }
+      } catch { /* ignore corrupt autosave */ }
+    }
+    this.renderLoop();
+  }
+
+  stop(): void {
+    if (this.animationFrameId !== null) cancelAnimationFrame(this.animationFrameId);
+    window.removeEventListener("keydown", this.handleKeyDown);
+    window.removeEventListener("keyup", this.handleKeyUp);
+    window.removeEventListener("resize", this.handleResize);
+    this.removeTextOverlay();
+  }
+
+  private renderLoop = (): void => {
+    if (this.needsRender) {
+      const marquee = this.marqueeStart && this.marqueeEnd
+        ? { start: this.marqueeStart, end: this.marqueeEnd } : null;
+      this.renderer.render(this.sceneGraph, this.viewport, this.selectedIds, marquee, this.selectedVertexMap);
+      this.needsRender = false;
+    }
+    this.animationFrameId = requestAnimationFrame(this.renderLoop);
+  };
+
+  // -- Input events (delegated to active tool) --
+
+  handlePointerDown(event: PointerEvent): void {
+    const screenX = event.offsetX;
+    const screenY = event.offsetY;
+    const world = this.viewport.screenToWorld(screenX, screenY);
+
+    // Pan: middle mouse or space+left
+    if (event.button === 1 || (event.button === 0 && this.spaceHeld)) {
+      this.isPanning = true;
+      this.panStartScreen = { x: screenX, y: screenY };
+      this.canvas.style.cursor = "grabbing";
+      return;
+    }
+
+    if (event.button !== 0) return;
+    this.activeTool.onPointerDown(this, world, event);
+  }
+
+  handlePointerMove(event: PointerEvent): void {
+    const screenX = event.offsetX;
+    const screenY = event.offsetY;
+    const world = this.viewport.screenToWorld(screenX, screenY);
+
+    if (this.isPanning) {
+      this.viewport.state.offsetX += screenX - this.panStartScreen.x;
+      this.viewport.state.offsetY += screenY - this.panStartScreen.y;
+      this.panStartScreen = { x: screenX, y: screenY };
+      this.requestRender();
+      return;
+    }
+
+    this.activeTool.onPointerMove(this, world, event);
+
+    // Update cursor (only if tool doesn't have a drag in progress)
+    if (!this.spaceHeld) {
+      this.canvas.style.cursor = this.activeTool.getCursor(this, world, screenX, screenY);
+    }
+  }
+
+  handlePointerUp(event: PointerEvent): void {
+    if (this.isPanning) {
+      this.isPanning = false;
+      this.canvas.style.cursor = this.spaceHeld ? "grab" : "default";
+      return;
+    }
+
+    const world = this.viewport.screenToWorld(event.offsetX, event.offsetY);
+    this.activeTool.onPointerUp(this, world, event);
+  }
+
+  handleWheel(event: WheelEvent): void {
+    event.preventDefault();
+    if (event.ctrlKey || event.metaKey) {
+      this.viewport.zoomAtPoint(event.offsetX, event.offsetY, event.deltaY);
+    } else {
+      this.viewport.pan(-event.deltaX, -event.deltaY);
+    }
+    this.syncStore();
+    this.requestRender();
+  }
+
+  handleDoubleClick(event: MouseEvent): void {
+    const world = this.viewport.screenToWorld(event.offsetX, event.offsetY);
+    const elements = this.sceneGraph.getElements();
+    for (let i = elements.length - 1; i >= 0; i--) {
+      const el = elements[i];
+      if (el instanceof TextNode && el.hitTest(world.x, world.y)) {
+        this.startTextEditing(el.id);
+        return;
+      }
+    }
+  }
+
+  // -- Keyboard --
+
+  private handleKeyDown(event: KeyboardEvent): void {
+    const active = document.activeElement;
+    if (this.editingTextNodeId || active instanceof HTMLInputElement ||
+        active instanceof HTMLTextAreaElement ||
+        (active instanceof HTMLElement && active.isContentEditable)) return;
+
+    if (event.code === "Space" && !event.repeat) {
+      this.spaceHeld = true;
+      this.canvas.style.cursor = "grab";
+      event.preventDefault();
+    }
+
+    // Tool shortcuts
+    const toolShortcuts: Record<string, string> = {
+      KeyV: "select", KeyR: "rectangle", KeyT: "text", KeyA: "arrow", KeyP: "freehand",
+    };
+    if (!event.repeat && !event.ctrlKey && !event.metaKey && toolShortcuts[event.code]) {
+      this.setTool(toolShortcuts[event.code] as ToolMode);
+    }
+
+    // Save/Open
+    if ((event.ctrlKey || event.metaKey) && event.code === "KeyS") { event.preventDefault(); this.saveProject(); }
+    if ((event.ctrlKey || event.metaKey) && event.code === "KeyO") { event.preventDefault(); this.loadProject(); }
+
+    // Undo/redo
+    if ((event.ctrlKey || event.metaKey) && event.code === "KeyZ" && !event.shiftKey) {
+      event.preventDefault();
+      if (this.undoManager.undo()) { this.syncStore(); this.requestRender(); }
+    }
+    if ((event.ctrlKey || event.metaKey) && event.code === "KeyZ" && event.shiftKey) {
+      event.preventDefault();
+      if (this.undoManager.redo()) { this.syncStore(); this.requestRender(); }
+    }
+
+    // Escape
+    if (event.code === "Escape") {
+      this.clearSelection();
+      this.setTool("select");
+      this.requestRender();
+    }
+
+    // Delete
+    if ((event.code === "Backspace" || event.code === "Delete") && this.selectedIds.size > 0) {
+      const removedNodes: BaseNode[] = [];
+      for (const id of this.selectedIds) {
+        const node = this.sceneGraph.findById(id);
+        if (node) { removedNodes.push(node); this.sceneGraph.removeElement(node); }
+      }
+      const sg = this.sceneGraph;
+      this.undoManager.pushExecuted({
+        execute: () => { for (const n of removedNodes) sg.removeElement(n); },
+        undo: () => { for (const n of removedNodes) sg.addElement(n); },
+      });
+      this.clearSelection();
+      this.syncStore();
+      this.requestRender();
+    }
+  }
+
+  private handleKeyUp(event: KeyboardEvent): void {
+    if (event.code === "Space") {
+      this.spaceHeld = false;
+      if (!this.isPanning) {
+        this.canvas.style.cursor = this.activeTool.id === "select" ? "default" : "crosshair";
+      }
+    }
+  }
+
+  handleResize(): void {
+    this.renderer.resize();
+    this.requestRender();
+  }
+
   // -- Image drop --
+
+  private handlePaste(event: ClipboardEvent): void {
+    // Don't intercept paste when typing in an input
+    const active = document.activeElement;
+    if (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement ||
+        (active instanceof HTMLElement && active.isContentEditable)) return;
+
+    const items = event.clipboardData?.items;
+    if (!items) return;
+
+    for (const item of items) {
+      if (item.type.startsWith("image/")) {
+        event.preventDefault();
+        const file = item.getAsFile();
+        if (!file) continue;
+
+        const reader = new FileReader();
+        reader.onload = () => {
+          const dataUrl = reader.result as string;
+          // Place at center of current viewport
+          const centerScreen = { x: this.canvas.width / 2, y: this.canvas.height / 2 };
+          const world = this.viewport.screenToWorld(centerScreen.x, centerScreen.y);
+
+          const node = new ImageNode();
+          node.x = world.x; node.y = world.y;
+          node.style = { ...node.style, strokeWidth: 0 };
+          node.loadImage(dataUrl).then(() => {
+            if (node.width > 400) { const s = 400 / node.width; node.width *= s; node.height *= s; }
+            // Center the image on the paste point
+            node.x -= node.width / 2;
+            node.y -= node.height / 2;
+            this.requestRender();
+          });
+          this.sceneGraph.addElement(node);
+          this.clearSelection();
+          this.selectedIds.add(node.id);
+          const sg = this.sceneGraph;
+          this.undoManager.pushExecuted({
+            execute: () => { if (!sg.findById(node.id)) sg.addElement(node); },
+            undo: () => { sg.removeElement(node); },
+          });
+          this.syncStore();
+          this.requestRender();
+        };
+        reader.readAsDataURL(file);
+        return;
+      }
+    }
+  }
 
   private handleDrop(event: DragEvent): void {
     event.preventDefault();
     const files = event.dataTransfer?.files;
     if (!files || files.length === 0) return;
-
     const file = files[0];
     if (!file.type.startsWith("image/")) return;
 
@@ -871,77 +767,44 @@ export class CanvasEngine {
     reader.onload = () => {
       const dataUrl = reader.result as string;
       const world = this.viewport.screenToWorld(event.offsetX, event.offsetY);
-
       const node = new ImageNode();
       node.x = world.x; node.y = world.y;
       node.style = { ...node.style, strokeWidth: 0 };
-
       node.loadImage(dataUrl).then(() => {
-        // Scale down large images to max 400px wide
-        if (node.width > 400) {
-          const scale = 400 / node.width;
-          node.width *= scale;
-          node.height *= scale;
-        }
+        if (node.width > 400) { const s = 400 / node.width; node.width *= s; node.height *= s; }
         this.requestRender();
       });
-
       this.sceneGraph.addElement(node);
-      this.selectedIds.clear();
+      this.clearSelection();
       this.selectedIds.add(node.id);
-
       const sg = this.sceneGraph;
       this.undoManager.pushExecuted({
         execute: () => { if (!sg.findById(node.id)) sg.addElement(node); },
         undo: () => { sg.removeElement(node); },
       });
-
       this.syncStore();
       this.requestRender();
     };
     reader.readAsDataURL(file);
   }
 
-  // -- Cursor --
+  // -- Demo content --
 
-  private updateCursor(world: Point, screenX: number, screenY: number): void {
-    if (this.spaceHeld) { this.canvas.style.cursor = "grab"; return; }
-    if (this.toolMode !== "select") { this.canvas.style.cursor = "crosshair"; return; }
+  private addDemoContent(): void {
+    const rect1 = new RectangleNode();
+    rect1.x = 100; rect1.y = 100; rect1.width = 200; rect1.height = 150;
+    rect1.style = { ...rect1.style, fillColor: "#4a90d9", strokeColor: "#2c5f8a", strokeWidth: 2, cornerRadius: 8 };
 
-    // Check resize handles and rotation zone
-    if (this.selectedIds.size === 1) {
-      const nodeId = this.selectedIds.values().next().value!;
-      const node = this.sceneGraph.findById(nodeId);
-      if (node) {
-        const bounds = node.getWorldBounds();
-        const screenBounds = this.worldBoundsToScreen(bounds);
-        const handle = hitTestHandles({ x: screenX, y: screenY }, screenBounds);
-        if (handle) { this.canvas.style.cursor = handle.cursor; return; }
-        if (hitTestRotation({ x: screenX, y: screenY }, screenBounds)) {
-          this.canvas.style.cursor = ROTATE_CURSOR;
-          return;
-        }
-      }
-    }
+    const rect2 = new RectangleNode();
+    rect2.x = 350; rect2.y = 200; rect2.width = 160; rect2.height = 120;
+    rect2.style = { ...rect2.style, fillColor: "#d94a4a", strokeColor: "#8a2c2c", strokeWidth: 2, cornerRadius: 4 };
 
-    // Check element hover
-    const elements = this.sceneGraph.getElements();
-    for (let i = elements.length - 1; i >= 0; i--) {
-      if (elements[i].hitTest(world.x, world.y)) {
-        this.canvas.style.cursor = "move";
-        return;
-      }
-    }
+    const text1 = new TextNode();
+    text1.x = 120; text1.y = 300; text1.content = "Double-click to edit";
+    text1.style = { ...text1.style, fillColor: "#333333", strokeWidth: 0 };
 
-    this.canvas.style.cursor = "default";
-  }
-
-  private worldBoundsToScreen(bounds: BoundingBox): BoundingBox {
-    const topLeft = this.viewport.worldToScreen(bounds.x, bounds.y);
-    return {
-      x: topLeft.x, y: topLeft.y,
-      width: bounds.width * this.viewport.state.zoom,
-      height: bounds.height * this.viewport.state.zoom,
-    };
+    this.sceneGraph.addElement(rect1);
+    this.sceneGraph.addElement(rect2);
+    this.sceneGraph.addElement(text1);
   }
 }

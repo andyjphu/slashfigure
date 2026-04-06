@@ -1,0 +1,2 @@
+Implement draw.io-style directional connection handles. When a user hovers over a shape, show 4 arrow handles (N/S/E/W) at the midpoints of each edge. Handles appear in muted blue-gray by default, turn bright blue on hover. Clicking a handle starts a connector line — the user drags to a target shape, and the connector snaps to the nearest anchor point on the target. Connectors auto-route with orthogonal pathing (Manhattan routing) to avoid overlapping shapes. Connectors are edge-to-edge, anchored at midpoints, not center-to-center.
+

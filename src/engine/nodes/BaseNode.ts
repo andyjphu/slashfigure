@@ -3,6 +3,7 @@ import type {
   BoundingBox,
   ElementType,
   StyleProperties,
+  Vertex,
 } from "../types";
 import { IDENTITY_MATRIX, DEFAULT_STYLE } from "../types";
 import { computeLocalTransform, multiplyMatrices } from "../Transform";
@@ -185,6 +186,18 @@ export abstract class BaseNode {
       height: maxY - minY,
     };
   }
+
+  // -- Vertex interface (override in vector nodes) --
+
+  /** Whether this node supports vertex-level editing */
+  hasVertices(): boolean { return false; }
+
+  /** Get editable vertices in local coordinate space */
+  getVertices(): Vertex[] { return []; }
+
+  /** Update a specific vertex by index. Implementations should update
+   *  the node's geometry (x, y, width, height, etc.) accordingly. */
+  setVertex(_index: number, _x: number, _y: number): void {}
 
   // -- Abstract rendering --
 

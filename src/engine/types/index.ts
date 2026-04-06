@@ -16,9 +16,11 @@ export interface BoundingBox {
 export interface StyleProperties {
   fillColor: string;
   fillOpacity: number;
+  fillVisible: boolean;
   strokeColor: string;
   strokeWidth: number;
   strokeOpacity: number;
+  strokeVisible: boolean;
   cornerRadius: number;
   opacity: number;
 }
@@ -41,14 +43,32 @@ export const IDENTITY_MATRIX: AffineMatrix = [1, 0, 0, 1, 0, 0];
 
 export type ElementType =
   | "rectangle"
+  | "path"
+  | "freehand"
   | "group"
   | "page"
   | "document"
   | "text"
-  | "arrow"
   | "image"
   | "table"
   | "equation";
+
+/** A vertex in a vector path, in local coordinate space relative to the node's origin */
+export interface Vertex {
+  x: number;
+  y: number;
+  /** Incoming bezier control point (relative to vertex). Null = straight segment. */
+  handleIn: Point | null;
+  /** Outgoing bezier control point (relative to vertex). Null = straight segment. */
+  handleOut: Point | null;
+}
+
+export type CapStyle = "none" | "arrow" | "diamond" | "circle";
+
+/** Create a simple vertex with no bezier handles */
+export function makeVertex(x: number, y: number): Vertex {
+  return { x, y, handleIn: null, handleOut: null };
+}
 
 /** Viewport state: maps world coordinates to screen coordinates */
 export interface ViewportState {
@@ -65,9 +85,11 @@ export interface ViewportState {
 export const DEFAULT_STYLE: StyleProperties = {
   fillColor: "#4a90d9",
   fillOpacity: 1,
+  fillVisible: true,
   strokeColor: "#2c5f8a",
   strokeWidth: 2,
   strokeOpacity: 1,
+  strokeVisible: true,
   cornerRadius: 0,
   opacity: 1,
 };

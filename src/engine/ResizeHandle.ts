@@ -7,6 +7,7 @@ export type HandlePosition =
 
 const HANDLE_SIZE = 8;
 
+
 export interface HandleInfo {
   position: HandlePosition;
   screenX: number;
@@ -106,14 +107,15 @@ export function applyResize(
     height = originalHeight + deltaWorldY;
   }
 
-  // Allow flipping: if width/height goes negative, flip the origin
-  if (width < 0) {
-    x = x + width;
-    width = -width;
+  // Clamp to minimum size -- no flipping through edges
+  const MIN_SIZE = 2;
+  if (width < MIN_SIZE) {
+    if (handle.includes("left")) x = originalX + originalWidth - MIN_SIZE;
+    width = MIN_SIZE;
   }
-  if (height < 0) {
-    y = y + height;
-    height = -height;
+  if (height < MIN_SIZE) {
+    if (handle.includes("top")) y = originalY + originalHeight - MIN_SIZE;
+    height = MIN_SIZE;
   }
 
   return { x, y, width, height };

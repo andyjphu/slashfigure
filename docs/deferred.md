@@ -27,7 +27,11 @@ Features and decisions explicitly deferred to post-MVP. Review after MVP launch.
 ### Drawing Primitives (post-MVP)
 - Ellipse, circle, triangle, polygon, star
 - Curved paths (Bezier) -- includes arrow midpoint insertion (hover mid-section to add vertex, drag to curve)
-- Groups / frames
+- **Flip via resize drag-through** -- drag an edge past the opposite edge to mirror the shape (PowerPoint-style). Attempted and reverted. Approaches tried and their failure modes:
+  1. **Normalize in `applyResize` + scaleX/scaleY toggle**: Handle names ("top", "left") no longer match visual positions after flip. Remapping handle names by scale sign partially worked but broke when combined with rotation. Resize on flipped+rotated shapes moved the wrong edge.
+  2. **Excalidraw pattern (negative dimensions during drag, normalize on mouseup)**: Rendering with negative width/height works for `fillRect`/`strokeRect` but not for `drawImage` or `roundRect`. Added flip-aware render in ImageNode but the persisted scaleX/scaleY conflicted with the world transform (double-flipping). Normalization on mouseup lost the flip state.
+  3. **Correct approach (not yet implemented)**: Likely needs a dedicated `scaleX`/`scaleY` that is baked into the world transform from the start, with all hit testing, handle positioning, and resize delta projection fully aware of scale sign. Fabric.js uses `lockScalingFlip` to avoid the problem entirely. Excalidraw defers normalization. Worth studying Fabric.js `_setObjectScale` and Excalidraw's `resizeElement` in depth before reattempting.
+- **Groups / frames (Figma-style)** -- Ctrl+G to group selected elements. Groups appear as collapsible nodes in the layers panel with indented children. Double-click a group to "enter" it (edit children directly). Click outside to exit. Groups propagate transforms to children. Research Figma's group vs frame distinction before implementing.
 - Chart elements (embedded Plotly/Vega-Lite)
 - Matplotlib SVG import with GID convention
 - **Icon library (solid-icons)** -- expose solid-icons (15,000+ icons from 20+ packs) as draggable elements users can place on canvas. solid-icons is for user content; Lucide is for UI chrome.

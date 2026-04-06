@@ -1,7 +1,7 @@
 import type { SceneGraph } from "./SceneGraph";
 import type { Viewport } from "./Viewport";
 import type { BaseNode } from "./nodes/BaseNode";
-import { ArrowNode } from "./nodes/ArrowNode";
+import { getNodeTypeInfo } from "./nodes/NodeRegistry";
 import type { Point } from "./types";
 import {
   SELECTION_STROKE, SELECTION_HANDLE_FILL, SELECTION_HANDLE_STROKE,
@@ -38,11 +38,16 @@ export class Renderer {
   }
 
   /** Full render pass: clear, draw background, draw grid, draw elements, draw selection */
+  /**
+   * @param selectedVertices Map of nodeId -> Set of selected vertex indices.
+   *   If a node is selected but not in this map, all vertices are considered selected.
+   */
   render(
     sceneGraph: SceneGraph,
     viewport: Viewport,
     selectedIds: Set<string>,
     marquee?: { start: Point; end: Point } | null,
+    selectedVertices?: Map<string, Set<number>>,
   ): void {
     const context = this.context;
     const width = this.canvas.width;
@@ -71,7 +76,7 @@ export class Renderer {
 
     // Draw selection overlays
     if (selectedIds.size > 0) {
-      this.renderSelectionOverlays(elements, viewport, selectedIds);
+      this.renderSelectionOverlays(elements, viewport, selectedIds, selectedVertices);
     }
   }
 
@@ -165,6 +170,7 @@ export class Renderer {
     elements: BaseNode[],
     viewport: Viewport,
     selectedIds: Set<string>,
+    selectedVertices?: Map<string, Set<number>>,
   ): void {
     const context = this.context;
 
@@ -184,40 +190,58 @@ export class Renderer {
         this.devicePixelRatio * (viewport.state.offsetY + viewport.state.zoom * wt[5]),
       );
 
-      if (element instanceof ArrowNode) {
-        this.renderArrowEndpoints(context, element, viewport);
-      } else {
+      const typeInfo = getNodeTypeInfo(element.type);
+      if (typeInfo.usesBoundingBoxSelection) {
         this.renderBoundingBoxSelection(context, element, viewport);
+      }
+      if (element.hasVertices() && !typeInfo.usesBoundingBoxSelection) {
+        this.renderVertexHandles(context, element, viewport, selectedVertices);
       }
 
       context.restore();
     }
   }
 
-  /** Draggable endpoint circles for arrows */
-  private renderArrowEndpoints(
+  /** Render vertex handle circles. Filled = selected, outline only = unselected. */
+  private renderVertexHandles(
     context: CanvasRenderingContext2D,
-    arrow: ArrowNode,
+    element: BaseNode,
     viewport: Viewport,
+    selectedVertices?: Map<string, Set<number>>,
   ): void {
+    const vertices = element.getVertices();
+    if (vertices.length === 0) return;
+
     const radius = 5 / viewport.state.zoom;
     const lineWidth = 1.5 / viewport.state.zoom;
-
-    context.fillStyle = SELECTION_HANDLE_FILL;
-    context.strokeStyle = SELECTION_HANDLE_STROKE;
     context.lineWidth = lineWidth;
 
-    // Start point (0, 0 in local space)
-    context.beginPath();
-    context.arc(0, 0, radius, 0, Math.PI * 2);
-    context.fill();
-    context.stroke();
+    // If this node has specific vertices selected, use that.
+    // Otherwise all vertices are considered selected (whole-shape selection).
+    const vertexSelection = selectedVertices?.get(element.id);
+    const allSelected = !vertexSelection; // No entry means all selected
 
-    // End point
-    context.beginPath();
-    context.arc(arrow.endX, arrow.endY, radius, 0, Math.PI * 2);
-    context.fill();
-    context.stroke();
+    for (let i = 0; i < vertices.length; i++) {
+      const vertex = vertices[i];
+      const isSelected = allSelected || vertexSelection!.has(i);
+
+      context.beginPath();
+      context.arc(vertex.x, vertex.y, radius, 0, Math.PI * 2);
+
+      if (isSelected) {
+        // Filled with accent
+        context.fillStyle = SELECTION_HANDLE_STROKE;
+        context.fill();
+        context.strokeStyle = SELECTION_HANDLE_STROKE;
+        context.stroke();
+      } else {
+        // Outline only (white fill, accent border)
+        context.fillStyle = SELECTION_HANDLE_FILL;
+        context.fill();
+        context.strokeStyle = SELECTION_HANDLE_STROKE;
+        context.stroke();
+      }
+    }
   }
 
   /** Bounding box + resize handles for rectangles, text, images */

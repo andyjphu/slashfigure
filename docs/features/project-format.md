@@ -66,9 +66,10 @@ The \figure website can open both formats:
 - Pages are ordered by `manifest.json`
 
 ## Saving Behavior
-- **Autosave:** On close + every 10 minutes
-- **Manual save:** Ctrl+S / Cmd+S
-- **Storage:** File System Access API (Chrome). User picks location once, subsequent saves go to same location.
+- **Autosave:** Aggressive -- 1.5 seconds after the last change (debounced). Saves on page close via `beforeunload`. Restores last session on app load. Stored in IndexedDB (async, off main thread, no permission prompts). Serialization is lazy -- only runs when the debounce fires, not on every render frame. No performance concern at current project sizes (<1MB JSON). Toggle on/off via File > Autosave.
+- **Why aggressive over periodic:** The old spec said every 10 minutes, but losing 10 minutes of work is unacceptable. 1.5s debounce means you never lose more than the last action. IndexedDB writes for small JSON are <1ms so there's no reason to be conservative. If projects grow to multi-MB (large embedded images), we can increase the debounce or move serialization to a Web Worker.
+- **Manual save:** Ctrl+S / Cmd+S downloads a `.sf` file.
+- **Storage:** IndexedDB for autosave (automatic, no prompts). File System Access API for explicit save (user picks location).
 - **Preferences:** Stored in localStorage (e.g., whether to embed metadata in exports, default project mode)
 
 ## Snapshots / Version History

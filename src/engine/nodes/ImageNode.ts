@@ -46,26 +46,43 @@ export class ImageNode extends BaseNode {
     );
 
     context.globalAlpha = this.style.opacity;
+    const { cornerRadius } = this.style;
+
+    // Draw image clipped to rounded rect (save/restore isolates the clip)
+    const drawW = this.width;
+    const drawH = this.height;
+    context.save();
+    if (cornerRadius > 0) {
+      context.beginPath();
+      context.roundRect(0, 0, drawW, drawH, cornerRadius);
+      context.clip();
+    }
 
     if (this.imageLoaded && this.imageElement) {
-      context.drawImage(this.imageElement, 0, 0, this.width, this.height);
+      context.drawImage(this.imageElement, 0, 0, drawW, drawH);
     } else {
-      // Placeholder while loading
       context.fillStyle = "#f0f0f0";
-      context.fillRect(0, 0, this.width || 100, this.height || 100);
+      context.fillRect(0, 0, drawW || 100, drawH || 100);
       context.fillStyle = "#999";
       context.font = "12px system-ui";
       context.textAlign = "center";
       context.textBaseline = "middle";
-      context.fillText("Loading...", (this.width || 100) / 2, (this.height || 100) / 2);
+      context.fillText("Loading...", (drawW || 100) / 2, (drawH || 100) / 2);
     }
+    context.restore();
 
-    // Stroke border if set
+    // Stroke drawn AFTER restoring clip so it's never clipped
     if (this.style.strokeWidth > 0 && this.style.strokeOpacity > 0) {
       context.globalAlpha = this.style.opacity * this.style.strokeOpacity;
       context.strokeStyle = this.style.strokeColor;
       context.lineWidth = this.style.strokeWidth;
-      context.strokeRect(0, 0, this.width, this.height);
+      context.beginPath();
+      if (cornerRadius > 0) {
+        context.roundRect(0, 0, drawW, drawH, cornerRadius);
+      } else {
+        context.rect(0, 0, drawW, drawH);
+      }
+      context.stroke();
     }
 
     context.restore();

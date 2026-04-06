@@ -51,7 +51,6 @@ export function computeLocalTransform(
   if (rotation === 0) {
     return [1, 0, 0, 1, x, y];
   }
-  // Translate to position, then rotate around center:
   // T(x + cx, y + cy) * R(rotation) * T(-cx, -cy)
   const cx = width / 2;
   const cy = height / 2;
