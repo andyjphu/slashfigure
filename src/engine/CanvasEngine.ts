@@ -6,6 +6,8 @@ import { Viewport } from "./Viewport";
 import { Renderer } from "./Renderer";
 import { UndoManager } from "./UndoManager";
 import { ImageNode } from "./nodes/ImageNode";
+import { TableNode } from "./nodes/TableNode";
+import { invertMatrix, transformPoint } from "./Transform";
 import { PathNode } from "./nodes/PathNode";
 import { TextNode } from "./nodes/TextNode";
 import { RectangleNode } from "./nodes/RectangleNode";
@@ -928,7 +930,85 @@ export class CanvasEngine implements EngineContext {
         this.startTextEditing(el.id);
         return;
       }
+      if (el instanceof TableNode && el.hitTest(world.x, world.y)) {
+        this.startTableCellEditing(el, world);
+        return;
+      }
     }
+  }
+
+  private startTableCellEditing(table: TableNode, world: { x: number; y: number }): void {
+    const inv = invertMatrix(table.getWorldTransform());
+    const local = transformPoint(inv, world);
+    const cell = table.getCellAtLocal(local.x, local.y);
+    if (!cell) return;
+
+    this.editingTextNodeId = table.id;
+    const previousContent = table.cells[cell.row][cell.col].content;
+
+    const cellRect = table.getCellRect(cell.row, cell.col);
+    const wt = table.getWorldTransform();
+    const cellWorldX = wt[0] * cellRect.x + wt[2] * cellRect.y + wt[4];
+    const cellWorldY = wt[1] * cellRect.x + wt[3] * cellRect.y + wt[5];
+    const screenPos = this.viewport.worldToScreen(cellWorldX, cellWorldY);
+    const zoom = this.viewport.state.zoom;
+
+    const overlay = document.createElement("input");
+    overlay.type = "text";
+    overlay.value = previousContent;
+    overlay.style.position = "absolute";
+    overlay.style.left = `${screenPos.x}px`;
+    overlay.style.top = `${screenPos.y}px`;
+    overlay.style.width = `${cellRect.w * zoom}px`;
+    overlay.style.height = `${cellRect.h * zoom}px`;
+    overlay.style.fontSize = `${13 * zoom}px`;
+    overlay.style.fontFamily = "system-ui, sans-serif";
+    overlay.style.border = "2px solid #4a90d9";
+    overlay.style.padding = "2px 4px";
+    overlay.style.outline = "none";
+    overlay.style.zIndex = "1000";
+    overlay.style.boxSizing = "border-box";
+    overlay.style.background = "white";
+
+    const commitCell = () => {
+      const newContent = overlay.value;
+      table.cells[cell.row][cell.col].content = newContent;
+      table.markVisualDirty();
+      this.removeTextOverlay();
+      this.editingTextNodeId = null;
+      if (newContent !== previousContent) {
+        const r = cell.row, c = cell.col;
+        this.undoManager.pushExecuted({
+          execute: () => { table.cells[r][c].content = newContent; table.markVisualDirty(); },
+          undo: () => { table.cells[r][c].content = previousContent; table.markVisualDirty(); },
+        });
+      }
+      this.requestRender();
+    };
+
+    overlay.addEventListener("blur", commitCell);
+    overlay.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { commitCell(); }
+      if (e.key === "Escape") { this.removeTextOverlay(); this.editingTextNodeId = null; }
+      if (e.key === "Tab") {
+        e.preventDefault();
+        commitCell();
+        // Move to next cell
+        const nextCol = (cell.col + 1) % table.colCount;
+        const nextRow = nextCol === 0 ? cell.row + 1 : cell.row;
+        if (nextRow < table.rowCount) {
+          const nextRect = table.getCellRect(nextRow, nextCol);
+          const nwx = wt[0] * (nextRect.x + nextRect.w / 2) + wt[2] * (nextRect.y + nextRect.h / 2) + wt[4];
+          const nwy = wt[1] * (nextRect.x + nextRect.w / 2) + wt[3] * (nextRect.y + nextRect.h / 2) + wt[5];
+          requestAnimationFrame(() => this.startTableCellEditing(table, { x: nwx, y: nwy }));
+        }
+      }
+      e.stopPropagation();
+    });
+
+    this.canvas.parentElement!.appendChild(overlay);
+    this.textOverlay = overlay as unknown as HTMLDivElement;
+    requestAnimationFrame(() => { overlay.focus(); overlay.select(); });
   }
 
   // -- Keyboard --
@@ -978,7 +1058,7 @@ export class CanvasEngine implements EngineContext {
 
     // Tool shortcuts
     const toolShortcuts: Record<string, string> = {
-      KeyV: "select", KeyR: "rectangle", KeyT: "text", KeyA: "arrow", KeyP: "freehand", KeyE: "equation",
+      KeyV: "select", KeyR: "rectangle", KeyT: "text", KeyA: "arrow", KeyP: "freehand", KeyE: "equation", KeyG: "table",
     };
     if (!event.repeat && !event.ctrlKey && !event.metaKey && toolShortcuts[event.code]) {
       this.setTool(toolShortcuts[event.code] as ToolMode);

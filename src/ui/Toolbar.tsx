@@ -2,7 +2,7 @@ import { For, createSignal } from "solid-js";
 import type { Accessor, JSX } from "solid-js";
 import type { ToolMode, LayerInfo } from "../engine/EngineStore";
 import {
-  MousePointer2, Square, Type, MoveRight, Pencil, Sigma,
+  MousePointer2, Square, Type, MoveRight, Pencil, Sigma, Table2,
   Eye, EyeOff, Image,
 } from "lucide-solid";
 import { UI_TOOL_ACTIVE, UI_TOOL_INACTIVE } from "../engine/theme";
@@ -39,6 +39,7 @@ const TOOLS: Array<{ id: ToolMode; label: string; shortcut: string; icon: () => 
   { id: "arrow", label: "Arrow", shortcut: "A", icon: () => <MoveRight size={14} /> },
   { id: "freehand", label: "Freehand", shortcut: "P", icon: () => <Pencil size={14} /> },
   { id: "equation", label: "Equation", shortcut: "E", icon: () => <Sigma size={14} /> },
+  { id: "table", label: "Table", shortcut: "G", icon: () => <Table2 size={14} /> },
 ];
 
 /** Map from NodeRegistry iconName to Lucide component.
@@ -50,6 +51,7 @@ const ICON_MAP: Record<string, (size: number) => JSX.Element> = {
   "image": (s) => <Image size={s} />,
   "pencil": (s) => <Pencil size={s} />,
   "sigma": (s) => <Sigma size={s} />,
+  "table": (s) => <Table2 size={s} />,
   "folder": (s) => <Square size={s} />,
 };
 

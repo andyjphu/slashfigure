@@ -2,7 +2,7 @@ import { createSignal } from "solid-js";
 import type { ElementType } from "./types";
 import { DEFAULT_STYLE } from "./types";
 
-export type ToolMode = "select" | "rectangle" | "text" | "arrow" | "freehand" | "equation";
+export type ToolMode = "select" | "rectangle" | "text" | "arrow" | "freehand" | "equation" | "table";
 
 /** Lightweight layer info for the layers panel (no node references) */
 export interface LayerInfo {

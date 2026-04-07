@@ -60,6 +60,12 @@ registerNodeType("image", {
   usesBoundingBoxSelection: true,
 });
 
+registerNodeType("table", {
+  layerLabel: "Table",
+  iconName: "table",
+  usesBoundingBoxSelection: true,
+});
+
 registerNodeType("equation", {
   layerLabel: "Equation",
   iconName: "sigma",

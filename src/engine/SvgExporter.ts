@@ -5,6 +5,7 @@ import { TextNode } from "./nodes/TextNode";
 import { PathNode } from "./nodes/PathNode";
 import { ImageNode } from "./nodes/ImageNode";
 import { FreehandNode } from "./nodes/FreehandNode";
+import { TableNode } from "./nodes/TableNode";
 import { containsMath, parseTextWithMath } from "./MathJaxService";
 import getStroke from "perfect-freehand";
 
@@ -47,6 +48,10 @@ function elementToSvg(el: BaseNode): string {
     }
     const escaped = el.content.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
     return `<text x="0" y="${el.fontSize}" font-size="${el.fontSize}" font-family="${el.fontFamily}" font-weight="${el.fontWeight}" fill="${el.style.fillColor}" opacity="${el.style.opacity}" transform="${transform}">${escaped}</text>`;
+  }
+
+  if (el instanceof TableNode) {
+    return renderTableToSvg(el, transform);
   }
 
   if (el instanceof FreehandNode) {
@@ -102,6 +107,44 @@ function elementToSvg(el: BaseNode): string {
   }
 
   return "";
+}
+
+function renderTableToSvg(el: TableNode, transform: string): string {
+  const parts: string[] = [];
+  parts.push(`<g transform="${transform}">`);
+
+  // Borders
+  let y = 0;
+  for (let r = 0; r <= el.rowCount; r++) {
+    parts.push(`<line x1="0" y1="${y}" x2="${el.width}" y2="${y}" stroke="#ccc" stroke-width="1" />`);
+    if (r < el.rowCount) y += el.rowHeights[r];
+  }
+  let x = 0;
+  for (let c = 0; c <= el.colCount; c++) {
+    parts.push(`<line x1="${x}" y1="0" x2="${x}" y2="${el.height}" stroke="#ccc" stroke-width="1" />`);
+    if (c < el.colCount) x += el.columnWidths[c];
+  }
+
+  // Cell text
+  y = 0;
+  for (let r = 0; r < el.rowCount; r++) {
+    x = 0;
+    for (let c = 0; c < el.colCount; c++) {
+      const cell = el.cells[r][c];
+      if (cell.content) {
+        const cx = x + 6;
+        const cy = y + el.rowHeights[r] / 2;
+        const escaped = cell.content.replace(/&/g, "&amp;").replace(/</g, "&lt;");
+        const weight = r === 0 && el.hasHeader ? "bold" : "normal";
+        parts.push(`<text x="${cx}" y="${cy}" font-size="13" font-family="system-ui, sans-serif" font-weight="${weight}" fill="#333" dominant-baseline="central">${escaped}</text>`);
+      }
+      x += el.columnWidths[c];
+    }
+    y += el.rowHeights[r];
+  }
+
+  parts.push(`</g>`);
+  return parts.join("\n");
 }
 
 /** Render a TextNode with inline math. Plain text as <text>, math as inline MathJax SVG. */

@@ -4,6 +4,7 @@ import { TextNode } from "./nodes/TextNode";
 import { PathNode } from "./nodes/PathNode";
 import { ImageNode } from "./nodes/ImageNode";
 import { FreehandNode } from "./nodes/FreehandNode";
+import { TableNode } from "./nodes/TableNode";
 import { SceneGraph } from "./SceneGraph";
 import type { StyleProperties, CapStyle } from "./types";
 
@@ -34,6 +35,10 @@ interface SerializedNode {
   endCap?: CapStyle;
   sourceUrl?: string;
   inputPoints?: Array<{ x: number; y: number; pressure: number }>;
+  cells?: Array<Array<{ content: string; align: string }>>;
+  columnWidths?: number[];
+  rowHeights?: number[];
+  hasHeader?: boolean;
   baseWidth?: number;
   baseHeight?: number;
 }
@@ -92,6 +97,13 @@ function serializeNode(node: BaseNode): SerializedNode {
     base.sourceUrl = node.sourceUrl;
   }
 
+  if (node instanceof TableNode) {
+    base.cells = node.cells;
+    base.columnWidths = node.columnWidths;
+    base.rowHeights = node.rowHeights;
+    base.hasHeader = node.hasHeader;
+  }
+
   if (node instanceof FreehandNode) {
     base.inputPoints = node.inputPoints.map((p) => ({ x: p.x, y: p.y, pressure: p.pressure }));
     base.baseWidth = node.baseWidth;
@@ -140,6 +152,15 @@ function deserializeNode(data: SerializedNode): BaseNode {
       pathNode.startCap = data.startCap ?? "none";
       pathNode.endCap = data.endCap ?? "none";
       node = pathNode;
+      break;
+    }
+    case "table": {
+      const tableNode = new TableNode(data.id);
+      tableNode.cells = (data.cells ?? [[{ content: "", align: "left" }]]) as TableNode["cells"];
+      tableNode.columnWidths = data.columnWidths ?? [100];
+      tableNode.rowHeights = data.rowHeights ?? [30];
+      tableNode.hasHeader = data.hasHeader ?? true;
+      node = tableNode;
       break;
     }
     case "freehand": {

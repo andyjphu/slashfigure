@@ -4,6 +4,7 @@ import { TextNode } from "./nodes/TextNode";
 import { PathNode } from "./nodes/PathNode";
 import { ImageNode } from "./nodes/ImageNode";
 import { FreehandNode } from "./nodes/FreehandNode";
+import { TableNode } from "./nodes/TableNode";
 
 export interface Metadata {
   textSummary: string;
@@ -47,6 +48,8 @@ function generateTextSummary(elements: BaseNode[]): string {
       lines.push(`- ${el.closed ? "Polygon" : "Line"} (${vertCount} points)${cap} ${pos}`);
     } else if (el instanceof ImageNode) {
       lines.push(`- Image ${size} ${pos}`);
+    } else if (el instanceof TableNode) {
+      lines.push(`- Table ${el.rowCount}x${el.colCount} ${pos}`);
     } else if (el instanceof FreehandNode) {
       lines.push(`- Freehand stroke (${el.inputPoints.length} points) ${pos}`);
     }

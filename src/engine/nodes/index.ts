@@ -5,3 +5,4 @@ export { TextNode } from "./TextNode";
 export { PathNode, createArrowPath, createLinePath } from "./PathNode";
 export { ImageNode } from "./ImageNode";
 export { FreehandNode } from "./FreehandNode";
+export { TableNode } from "./TableNode";

@@ -5,6 +5,7 @@ import { TextTool } from "./TextTool";
 import { ArrowTool } from "./ArrowTool";
 import { FreehandTool } from "./FreehandTool";
 import { EquationTool } from "./EquationTool";
+import { TableTool } from "./TableTool";
 
 /**
  * Registry of all available tools.
@@ -21,6 +22,7 @@ export function createToolRegistry(): Map<string, Tool> {
   register(new ArrowTool());
   register(new FreehandTool());
   register(new EquationTool());
+  register(new TableTool());
 
   return tools;
 }

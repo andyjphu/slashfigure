@@ -7,6 +7,7 @@ import { renderMathSvgToPdf } from "./MathSvgToPdf";
 import { PathNode } from "./nodes/PathNode";
 import { ImageNode } from "./nodes/ImageNode";
 import { FreehandNode } from "./nodes/FreehandNode";
+import { TableNode } from "./nodes/TableNode";
 import type { SceneGraph } from "./SceneGraph";
 import getStroke from "perfect-freehand";
 
@@ -70,6 +71,8 @@ function renderElementToPdf(doc: PDFKit.PDFDocument, el: BaseNode): void {
     renderTextToPdf(doc, el);
   } else if (el instanceof PathNode) {
     renderPathToPdf(doc, el);
+  } else if (el instanceof TableNode) {
+    renderTableToPdf(doc, el);
   } else if (el instanceof FreehandNode) {
     renderFreehandToPdf(doc, el);
   } else if (el instanceof ImageNode) {
@@ -189,6 +192,54 @@ function renderPathToPdf(doc: PDFKit.PDFDocument, el: PathNode): void {
   }
 }
 
+
+function renderTableToPdf(doc: PDFKit.PDFDocument, el: TableNode): void {
+  doc.opacity(el.style.opacity);
+
+  // Draw borders
+  doc.strokeColor("#cccccc");
+  doc.lineWidth(1);
+
+  let y = 0;
+  for (let r = 0; r <= el.rowCount; r++) {
+    doc.moveTo(0, y).lineTo(el.width, y).stroke();
+    if (r < el.rowCount) y += el.rowHeights[r];
+  }
+  let x = 0;
+  for (let c = 0; c <= el.colCount; c++) {
+    doc.moveTo(x, 0).lineTo(x, el.height).stroke();
+    if (c < el.colCount) x += el.columnWidths[c];
+  }
+
+  // Header background
+  if (el.hasHeader) {
+    doc.fillColor("#f5f5f5");
+    doc.rect(0, 0, el.width, el.rowHeights[0]).fill();
+    // Redraw top border over fill
+    doc.strokeColor("#cccccc");
+    doc.moveTo(0, 0).lineTo(el.width, 0).stroke();
+    doc.moveTo(0, el.rowHeights[0]).lineTo(el.width, el.rowHeights[0]).stroke();
+  }
+
+  // Cell text
+  doc.fillColor("#333333");
+  doc.fontSize(13);
+  y = 0;
+  for (let r = 0; r < el.rowCount; r++) {
+    x = 0;
+    for (let c = 0; c < el.colCount; c++) {
+      const cell = el.cells[r][c];
+      if (cell.content) {
+        doc.text(cell.content, x + 6, y + (el.rowHeights[r] - 13) / 2, {
+          width: el.columnWidths[c] - 12,
+          lineBreak: false,
+        });
+      }
+      x += el.columnWidths[c];
+    }
+    y += el.rowHeights[r];
+  }
+}
 
 function renderFreehandToPdf(doc: PDFKit.PDFDocument, el: FreehandNode): void {
   if (el.inputPoints.length < 2) return;
